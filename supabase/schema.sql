@@ -4,6 +4,7 @@ create table if not exists contestants (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   status text default 'active',
+  contestant_type text default 'original_islander',
   image_url text,
   created_at timestamp default now()
 );

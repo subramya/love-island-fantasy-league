@@ -5,6 +5,10 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { unlockAdmin } from "@/lib/adminAccess";
 import {
+  contestantTypeOptions,
+  getContestantTypeLabel,
+} from "@/lib/contestantTypes";
+import {
   getPredictionTypeDescription,
   getPredictionTypeLabel,
   isRecouplingPrediction,
@@ -18,6 +22,7 @@ type Contestant = {
   id: string;
   name: string;
   status: string;
+  contestant_type: string;
   image_url: string | null;
 };
 
@@ -81,7 +86,9 @@ export default function AdminPage() {
   const [contestantName, setContestantName] = useState("");
   const [contestantImageUrl, setContestantImageUrl] = useState("");
   const [newContestantStatus, setNewContestantStatus] = useState("active");
+  const [newContestantType, setNewContestantType] = useState("original_islander");
   const [contestantStatuses, setContestantStatuses] = useState<Record<string, string>>({});
+  const [contestantTypes, setContestantTypes] = useState<Record<string, string>>({});
   const [roundTitle, setRoundTitle] = useState("");
   const [predictionType, setPredictionType] = useState("recoupling_prediction");
   const [selectedBombshellContestantId, setSelectedBombshellContestantId] = useState("");
@@ -115,7 +122,10 @@ export default function AdminPage() {
       { data: roundsData, error: roundsError },
       { data: leagueMembersData, error: leagueMembersError },
     ] = await Promise.all([
-      supabase.from("contestants").select("id, name, status, image_url").order("created_at", { ascending: false }),
+      supabase
+        .from("contestants")
+        .select("id, name, status, contestant_type, image_url")
+        .order("created_at", { ascending: false }),
       supabase
         .from("rounds")
         .select("id, title, prediction_type, bombshell_contestant_id, status")
@@ -152,6 +162,12 @@ export default function AdminPage() {
     setContestantStatuses(
       nextContestants.reduce<Record<string, string>>((map, contestant) => {
         map[contestant.id] = contestant.status;
+        return map;
+      }, {})
+    );
+    setContestantTypes(
+      nextContestants.reduce<Record<string, string>>((map, contestant) => {
+        map[contestant.id] = contestant.contestant_type ?? "original_islander";
         return map;
       }, {})
     );
@@ -280,6 +296,7 @@ export default function AdminPage() {
     const { error } = await supabase.from("contestants").insert({
       name: contestantName.trim(),
       status: newContestantStatus,
+      contestant_type: newContestantType,
       image_url: contestantImageUrl.trim() || null,
     });
 
@@ -291,19 +308,21 @@ export default function AdminPage() {
     setContestantName("");
     setContestantImageUrl("");
     setNewContestantStatus("active");
+    setNewContestantType("original_islander");
     setSuccessMessage("Contestant added.");
     await loadAdminData();
   };
 
-  const updateContestantStatus = async (contestantId: string) => {
+  const updateContestantProfile = async (contestantId: string) => {
     setErrorMessage("");
     setSuccessMessage("");
 
     const nextStatus = contestantStatuses[contestantId];
+    const nextContestantType = contestantTypes[contestantId] ?? "original_islander";
 
     const { error } = await supabase
       .from("contestants")
-      .update({ status: nextStatus })
+      .update({ status: nextStatus, contestant_type: nextContestantType })
       .eq("id", contestantId);
 
     if (error) {
@@ -311,7 +330,7 @@ export default function AdminPage() {
       return;
     }
 
-    setSuccessMessage("Contestant status updated.");
+    setSuccessMessage("Contestant profile updated.");
     await loadAdminData();
   };
 
@@ -1137,6 +1156,20 @@ export default function AdminPage() {
                   <option value="eliminated">eliminated</option>
                 </select>
               </label>
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                Contestant type
+                <select
+                  value={newContestantType}
+                  onChange={(event) => setNewContestantType(event.target.value)}
+                  className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
+                >
+                  {contestantTypeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button
                 type="button"
                 onClick={addContestant}
@@ -1241,7 +1274,7 @@ export default function AdminPage() {
         </section>
 
         <section className="rounded-[2rem] border border-sky-400/20 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
-          <h2 className="text-xl font-semibold">Update contestant status</h2>
+          <h2 className="text-xl font-semibold">Update contestants</h2>
           {contestants.length > 0 ? (
             <div className="mt-4 space-y-3">
               {contestants.map((contestant) => (
@@ -1262,7 +1295,9 @@ export default function AdminPage() {
                     </div>
                     <div>
                       <p className="font-semibold">{contestant.name}</p>
-                      <p className="text-sm text-zinc-500">{contestant.status}</p>
+                      <p className="text-sm text-zinc-500">
+                        {contestant.status} • {getContestantTypeLabel(contestant.contestant_type)}
+                      </p>
                     </div>
                   </div>
                   <div className="flex flex-col gap-3 sm:flex-row">
@@ -1279,12 +1314,28 @@ export default function AdminPage() {
                       <option value="active">active</option>
                       <option value="eliminated">eliminated</option>
                     </select>
+                    <select
+                      value={contestantTypes[contestant.id] ?? contestant.contestant_type}
+                      onChange={(event) =>
+                        setContestantTypes((currentValue) => ({
+                          ...currentValue,
+                          [contestant.id]: event.target.value,
+                        }))
+                      }
+                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
+                    >
+                      {contestantTypeOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                     <button
                       type="button"
-                      onClick={() => updateContestantStatus(contestant.id)}
+                      onClick={() => updateContestantProfile(contestant.id)}
                       className="rounded-full border border-zinc-700 bg-zinc-950 px-5 py-3 text-sm font-semibold text-zinc-100 transition hover:border-pink-400 hover:text-pink-300"
                     >
-                      Save status
+                      Save contestant
                     </button>
                   </div>
                 </div>

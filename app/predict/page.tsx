@@ -63,6 +63,50 @@ function getContestantName(contestants: Contestant[], contestantId: string) {
   return contestants.find((contestant) => contestant.id === contestantId)?.name ?? "Not picked yet";
 }
 
+function CastBoard({ contestants }: { contestants: Contestant[] }) {
+  return (
+    <div className="rounded-3xl border border-yellow-500/20 bg-yellow-500/5 p-5">
+      <div className="mb-4">
+        <h3 className="text-lg font-semibold text-zinc-100">Episode 1 cast board</h3>
+        <p className="mt-1 text-sm text-zinc-400">
+          Everyone starting in the villa is right here, so you can scan the faces before locking in the first couples.
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {contestants.map((contestant) => (
+          <div
+            key={contestant.id}
+            className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-950/90 px-4 py-3"
+          >
+            <div className="relative h-16 w-16 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900">
+              {contestant.image_url ? (
+                <Image
+                  src={contestant.image_url}
+                  alt={contestant.name}
+                  fill
+                  className="object-cover"
+                  sizes="64px"
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center text-lg font-semibold text-zinc-500">
+                  {contestant.name.charAt(0)}
+                </div>
+              )}
+            </div>
+            <div className="min-w-0">
+              <p className="font-medium text-zinc-100">{contestant.name}</p>
+              <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">
+                Original islander
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 type ContestantPickerProps = {
   contestants: Contestant[];
   label: string;
@@ -153,6 +197,7 @@ export default function PredictPage() {
       ? contestants.find((contestant) => contestant.id === openRound.bombshell_contestant_id)?.name ??
         "this bombshell"
       : "the bombshell";
+  const isInitialCouplingRound = openRound?.prediction_type === "initial_coupling_prediction";
 
   useEffect(() => {
     const loadPredictionPage = async () => {
@@ -593,6 +638,7 @@ export default function PredictPage() {
 
               {openRound && isRecouplingPrediction(openRound.prediction_type) ? (
                 <div className="mt-6 space-y-4">
+                  {isInitialCouplingRound ? <CastBoard contestants={activeContestants} /> : null}
                   {rows.map((row, index) => (
                     <div
                       key={row.rowId}

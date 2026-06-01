@@ -4,6 +4,11 @@ import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import {
+  contestantTypeOptions,
+  getContestantTypeLabel,
+  getContestantTypeStyles,
+} from "@/lib/contestantTypes";
+import {
   clearStoredLeagueUser,
   getStoredLeagueUser,
   storeLeagueUser,
@@ -15,6 +20,7 @@ type Contestant = {
   id: string;
   name: string;
   status: string;
+  contestant_type: string;
   image_url: string | null;
 };
 
@@ -61,7 +67,7 @@ export default function Home() {
       ] = await Promise.all([
         supabase
           .from("contestants")
-          .select("id, name, status, image_url")
+          .select("id, name, status, contestant_type, image_url")
           .order("name"),
         supabase
           .from("rounds")
@@ -618,6 +624,7 @@ export default function Home() {
                 <tr className="bg-zinc-900 text-sm text-zinc-300">
                   <th className="border-b border-zinc-800 px-4 py-3 font-semibold">Islander</th>
                   <th className="border-b border-zinc-800 px-4 py-3 font-semibold">Status</th>
+                  <th className="border-b border-zinc-800 px-4 py-3 font-semibold">Type</th>
                   <th className="border-b border-zinc-800 px-4 py-3 font-semibold">Current partner</th>
                   <th className="border-b border-zinc-800 px-4 py-3 font-semibold">Villa note</th>
                 </tr>
@@ -627,9 +634,10 @@ export default function Home() {
                   contestants.map((contestant) => {
                     const partner = partnerMap[contestant.id];
                     const isActive = contestant.status === "active";
+                    const typeStyles = getContestantTypeStyles(contestant.contestant_type);
 
                     return (
-                      <tr key={contestant.id} className="bg-zinc-950">
+                      <tr key={contestant.id} className={typeStyles.rowClassName}>
                         <td className="border-b border-zinc-900 px-4 py-4 font-semibold text-zinc-100">
                           <div className="flex items-center gap-3">
                             <div className="relative h-12 w-12 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
@@ -656,6 +664,13 @@ export default function Home() {
                             {contestant.status}
                           </span>
                         </td>
+                        <td className="border-b border-zinc-900 px-4 py-4">
+                          <span
+                            className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] ${typeStyles.badgeClassName}`}
+                          >
+                            {getContestantTypeLabel(contestant.contestant_type)}
+                          </span>
+                        </td>
                         <td className="border-b border-zinc-900 px-4 py-4 text-zinc-200">
                           {partner ?? "TBD"}
                         </td>
@@ -672,7 +687,7 @@ export default function Home() {
                 ) : (
                   <tr>
                     <td
-                      colSpan={4}
+                      colSpan={5}
                       className="px-4 py-10 text-center text-sm text-zinc-400"
                     >
                       Add contestants in admin to start filling the villa board.
@@ -681,6 +696,22 @@ export default function Home() {
                 )}
               </tbody>
             </table>
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-400">
+              Key
+            </p>
+            <div className="mt-3 flex flex-wrap gap-3">
+              {contestantTypeOptions.map((option) => (
+                <div
+                  key={option.value}
+                  className={`rounded-full border px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] ${option.badgeClassName}`}
+                >
+                  {option.label}
+                </div>
+              ))}
+            </div>
           </div>
 
         </section>

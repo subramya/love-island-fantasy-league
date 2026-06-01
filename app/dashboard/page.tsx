@@ -3,6 +3,11 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import {
+  contestantTypeOptions,
+  getContestantTypeLabel,
+  getContestantTypeStyles,
+} from "@/lib/contestantTypes";
 import { getStoredLeagueUser, type LeagueUser } from "@/lib/leagueUser";
 import { getPredictionTypeLabel } from "@/lib/predictionTypes";
 import { supabase } from "@/lib/supabaseClient";
@@ -11,6 +16,7 @@ type Contestant = {
   id: string;
   name: string;
   status: string;
+  contestant_type: string;
   image_url: string | null;
 };
 
@@ -49,7 +55,7 @@ export default function DashboardPage() {
       ] = await Promise.all([
         supabase
           .from("contestants")
-          .select("id, name, status, image_url")
+          .select("id, name, status, contestant_type, image_url")
           .eq("status", "active")
           .order("name"),
         supabase
@@ -146,31 +152,67 @@ export default function DashboardPage() {
             <section className="rounded-3xl border border-zinc-800 bg-zinc-950/90 p-8 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
               <h2 className="text-xl font-semibold">Active contestants</h2>
               {contestants.length > 0 ? (
-                <ul className="mt-4 grid gap-3 sm:grid-cols-2">
-                  {contestants.map((contestant) => (
-                    <li
-                      key={contestant.id}
-                      className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="relative h-12 w-12 overflow-hidden rounded-full border border-zinc-800 bg-zinc-950">
-                          {contestant.image_url ? (
-                            <Image
-                              src={contestant.image_url}
-                              alt={contestant.name}
-                              fill
-                              className="object-cover"
-                            />
-                          ) : null}
+                <>
+                  <div className="mt-4 overflow-hidden rounded-3xl border border-zinc-800">
+                    <div className="grid grid-cols-[minmax(0,1.6fr)_auto_auto] gap-4 border-b border-zinc-800 bg-zinc-900/90 px-5 py-4 text-xs font-semibold uppercase tracking-[0.22em] text-zinc-400">
+                      <p>Islander</p>
+                      <p>Status</p>
+                      <p>Type</p>
+                    </div>
+                    {contestants.map((contestant) => {
+                      const typeStyles = getContestantTypeStyles(contestant.contestant_type);
+
+                      return (
+                        <div
+                          key={contestant.id}
+                          className={`grid grid-cols-[minmax(0,1.6fr)_auto_auto] gap-4 border-b border-zinc-800/80 px-5 py-4 last:border-b-0 ${typeStyles.rowClassName}`}
+                        >
+                          <div className="flex min-w-0 items-center gap-3">
+                            <div className="relative h-12 w-12 overflow-hidden rounded-full border border-zinc-800 bg-zinc-950">
+                              {contestant.image_url ? (
+                                <Image
+                                  src={contestant.image_url}
+                                  alt={contestant.name}
+                                  fill
+                                  className="object-cover"
+                                />
+                              ) : null}
+                            </div>
+                            <p className="truncate font-medium text-zinc-100">{contestant.name}</p>
+                          </div>
+                          <div className="flex items-center">
+                            <span className="rounded-full border border-zinc-700 bg-zinc-950/90 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-300">
+                              {contestant.status}
+                            </span>
+                          </div>
+                          <div className="flex items-center">
+                            <span
+                              className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] ${typeStyles.badgeClassName}`}
+                            >
+                              {getContestantTypeLabel(contestant.contestant_type)}
+                            </span>
+                          </div>
                         </div>
-                        <div>
-                          <p className="font-medium">{contestant.name}</p>
-                          <p className="text-sm text-zinc-500">{contestant.status}</p>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-400">
+                      Key
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-3">
+                      {contestantTypeOptions.map((option) => (
+                        <div
+                          key={option.value}
+                          className={`rounded-full border px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] ${option.badgeClassName}`}
+                        >
+                          {option.label}
                         </div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
+                      ))}
+                    </div>
+                  </div>
+                </>
               ) : (
                 <p className="mt-3 text-zinc-400">No active contestants found.</p>
               )}
