@@ -342,6 +342,44 @@ export default function Home() {
 
         <section className="rounded-[2rem] border border-zinc-800 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
           <div className="max-w-3xl">
+            <p className="text-sm font-medium uppercase tracking-[0.3em] text-pink-300">
+              Love Island Basics
+            </p>
+            <h2 className="mt-2 text-3xl font-semibold">What actually happens in the villa</h2>
+            <p className="mt-3 text-sm leading-7 text-zinc-400">
+              Islanders live together, couple up, get split apart, and survive a steady stream of
+              bombshells, recouplings, and eliminations. New arrivals can steal people, couples can
+              break overnight, and anyone left single or unpopular can end up dumped from the villa.
+              That shifting relationship chaos is what this league is built around.
+            </p>
+          </div>
+
+          <div className="mt-6 grid gap-3 text-sm text-zinc-300 sm:grid-cols-3">
+            <div className="rounded-2xl border border-pink-400/20 bg-pink-500/10 p-4">
+              <p className="font-semibold text-pink-200">Couplings change fast</p>
+              <p className="mt-2 text-zinc-300/80">
+                Islanders pair up early, but bombshells and recouplings can flip everything in a
+                single episode.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-sky-400/20 bg-sky-500/10 p-4">
+              <p className="font-semibold text-sky-100">Bombshells cause chaos</p>
+              <p className="mt-2 text-zinc-300/80">
+                New contestants arrive to tempt, steal, and shake up couples that looked safe five
+                minutes earlier.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-4">
+              <p className="font-semibold text-yellow-100">Dumpings raise the stakes</p>
+              <p className="mt-2 text-zinc-300/80">
+                Islanders who lose their partner, lose public support, or get caught in the wrong
+                twist can be sent home.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-8 border-t border-zinc-800 pt-8">
+          <div className="max-w-3xl">
             <p className="text-sm font-medium uppercase tracking-[0.3em] text-sky-300">
               How to play
             </p>
@@ -416,6 +454,7 @@ export default function Home() {
                 </p>
               </div>
             </div>
+          </div>
           </div>
         </section>
 
