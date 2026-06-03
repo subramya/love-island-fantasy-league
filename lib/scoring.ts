@@ -7,6 +7,7 @@ type CoupleRow = {
 };
 
 type PredictionRow = {
+  bombshell_contestant_id?: string | null;
   contestant_1_id: string;
   contestant_2_id?: string | null;
   prediction_role?: string | null;
@@ -14,6 +15,7 @@ type PredictionRow = {
 };
 
 type RoundResultRow = {
+  bombshell_contestant_id?: string | null;
   result_type: string;
   contestant_id: string | null;
 };
@@ -124,11 +126,25 @@ export function calculateBombshellScores(
   roundResults: RoundResultRow[]
 ) {
   const totals = new Map<string, number>();
-  const targetResultId =
-    roundResults.find((result) => result.result_type === "target_pick")?.contestant_id ?? null;
+  const targetResultsByBombshell = new Map<string, string>();
+
+  roundResults.forEach((result) => {
+    if (
+      result.result_type === "target_pick" &&
+      result.bombshell_contestant_id &&
+      result.contestant_id
+    ) {
+      targetResultsByBombshell.set(result.bombshell_contestant_id, result.contestant_id);
+    }
+  });
 
   for (const prediction of predictions) {
-    if (prediction.prediction_role === "target_pick" && prediction.contestant_1_id === targetResultId) {
+    if (
+      prediction.prediction_role === "target_pick" &&
+      prediction.bombshell_contestant_id &&
+      prediction.contestant_1_id ===
+        targetResultsByBombshell.get(prediction.bombshell_contestant_id)
+    ) {
       addPoints(totals, prediction.user_id, 5);
     }
   }
@@ -200,11 +216,11 @@ export async function runRoundScoring(supabase: SupabaseClient, roundId: string)
     ] = await Promise.all([
       supabase
         .from("predictions")
-        .select("user_id, contestant_1_id, prediction_role")
+        .select("user_id, contestant_1_id, prediction_role, bombshell_contestant_id")
         .eq("round_id", roundId),
       supabase
         .from("round_results")
-        .select("result_type, contestant_id")
+        .select("result_type, contestant_id, bombshell_contestant_id")
         .eq("round_id", roundId),
     ]);
 
@@ -248,7 +264,7 @@ export async function runRoundScoring(supabase: SupabaseClient, roundId: string)
     }
 
     if (!(roundResults ?? []).some((result) => result.result_type === "target_pick")) {
-      throw new Error("Add the actual bombshell target before running scoring.");
+      throw new Error("Add at least one actual bombshell target before running scoring.");
     }
 
     scoreRows = calculateBombshellScores(

@@ -19,6 +19,11 @@ type Round = {
   bombshell_contestant_id: string | null;
 };
 
+type RoundBombshellRow = {
+  round_id: string;
+  bombshell_contestant_id: string;
+};
+
 type Contestant = {
   id: string;
   name: string;
@@ -39,6 +44,7 @@ type ActualCouple = {
 type RoundResult = {
   round_id: string;
   result_type: string;
+  bombshell_contestant_id?: string | null;
   contestant_id: string | null;
 };
 
@@ -61,7 +67,8 @@ function describeRoundResults(
   round: Round,
   contestantsById: Map<string, string>,
   actualCouples: ActualCouple[],
-  roundResults: RoundResult[]
+  roundResults: RoundResult[],
+  roundBombshellMap: Map<string, string[]>
 ) {
   if (isRecouplingPrediction(round.prediction_type)) {
     const couples = actualCouples
@@ -94,16 +101,31 @@ function describeRoundResults(
   }
 
   if (round.prediction_type === "bombshell_arrival_prediction") {
-    const targetId =
-      roundResults.find(
-        (result) => result.round_id === round.id && result.result_type === "target_pick"
-      )?.contestant_id ?? null;
-    const bombshellName = round.bombshell_contestant_id
-      ? contestantsById.get(round.bombshell_contestant_id) ?? "Unknown"
-      : "Bombshell";
-    const targetName = targetId ? contestantsById.get(targetId) ?? "Unknown" : "Not set";
+    const bombshellIds = roundBombshellMap.get(round.id)?.length
+      ? roundBombshellMap.get(round.id) ?? []
+      : round.bombshell_contestant_id
+        ? [round.bombshell_contestant_id]
+        : [];
 
-    return `${bombshellName} went after ${targetName}`;
+    if (bombshellIds.length === 0) {
+      return "No bombshell focus set yet.";
+    }
+
+    return bombshellIds
+      .map((bombshellId) => {
+        const targetId =
+          roundResults.find(
+            (result) =>
+              result.round_id === round.id &&
+              result.result_type === "target_pick" &&
+              result.bombshell_contestant_id === bombshellId
+          )?.contestant_id ?? null;
+        const bombshellName = contestantsById.get(bombshellId) ?? "Unknown";
+        const targetName = targetId ? contestantsById.get(targetId) ?? "Unknown" : "Not set";
+
+        return `${bombshellName} went after ${targetName}`;
+      })
+      .join(" • ");
   }
 
   return "No results summary for this round type.";
@@ -127,6 +149,7 @@ export default function LeaderboardPage() {
         { data: scoreData, error: scoreError },
         { data: userData, error: userError },
         { data: roundData, error: roundError },
+        { data: roundBombshellData, error: roundBombshellError },
         { data: contestantData, error: contestantError },
         { data: actualCoupleData, error: actualCoupleError },
         { data: roundResultsData, error: roundResultsError },
@@ -140,17 +163,23 @@ export default function LeaderboardPage() {
           .from("rounds")
           .select("id, title, prediction_type, bombshell_contestant_id, status")
           .order("created_at", { ascending: false }),
+        supabase
+          .from("round_bombshells")
+          .select("round_id, bombshell_contestant_id"),
         supabase.from("contestants").select("id, name").order("name"),
         supabase
           .from("actual_couples")
           .select("round_id, contestant_1_id, contestant_2_id"),
-        supabase.from("round_results").select("round_id, result_type, contestant_id"),
+        supabase
+          .from("round_results")
+          .select("round_id, result_type, contestant_id, bombshell_contestant_id"),
       ]);
 
       if (
         scoreError ||
         userError ||
         roundError ||
+        roundBombshellError ||
         contestantError ||
         actualCoupleError ||
         roundResultsError
@@ -159,6 +188,7 @@ export default function LeaderboardPage() {
           scoreError?.message ??
             userError?.message ??
             roundError?.message ??
+            roundBombshellError?.message ??
             contestantError?.message ??
             actualCoupleError?.message ??
             roundResultsError?.message ??
@@ -181,6 +211,12 @@ export default function LeaderboardPage() {
       const contestantsById = new Map(
         ((contestantData ?? []) as Contestant[]).map((contestant) => [contestant.id, contestant.name])
       );
+      const roundBombshellMap = ((roundBombshellData ?? []) as RoundBombshellRow[]).reduce<
+        Map<string, string[]>
+      >((map, row) => {
+        map.set(row.round_id, [...(map.get(row.round_id) ?? []), row.bombshell_contestant_id]);
+        return map;
+      }, new Map());
 
       const nextEntries = ((userData ?? []) as LeagueUserRow[])
         .map((user) => ({
@@ -207,7 +243,8 @@ export default function LeaderboardPage() {
           round,
           contestantsById,
           (actualCoupleData ?? []) as ActualCouple[],
-          (roundResultsData ?? []) as RoundResult[]
+          (roundResultsData ?? []) as RoundResult[],
+          roundBombshellMap
         ),
         playerPoints: pointsByRound.get(round.id) ?? 0,
       }));

@@ -25,7 +25,7 @@ export const predictionTypeOptions = [
     label: "Bombshell arrival prediction",
     pointsAvailable: true,
     description:
-      "Use this when a bombshell arrives and players need to guess which islander gets targeted first.",
+      "Use this when one or more bombshells arrive and players need to guess which islander each one targets first.",
   },
   {
     value: "no_score_episode",

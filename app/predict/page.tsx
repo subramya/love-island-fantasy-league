@@ -27,6 +27,11 @@ type Round = {
   status: string;
 };
 
+type RoundBombshellRow = {
+  round_id: string;
+  bombshell_contestant_id: string;
+};
+
 type PredictionFormRow = {
   rowId: number;
   contestant1Id: string;
@@ -34,6 +39,7 @@ type PredictionFormRow = {
 };
 
 type StoredPrediction = {
+  bombshell_contestant_id?: string | null;
   contestant_1_id: string | null;
   contestant_2_id: string | null;
   prediction_role: string | null;
@@ -61,6 +67,21 @@ function formatPredictionErrorMessage(message: string) {
 
 function getContestantName(contestants: Contestant[], contestantId: string) {
   return contestants.find((contestant) => contestant.id === contestantId)?.name ?? "Not picked yet";
+}
+
+function getBombshellIdsForRound(
+  round: Round | null,
+  roundBombshellMap: Record<string, string[]>
+) {
+  if (!round) {
+    return [];
+  }
+
+  if (roundBombshellMap[round.id]?.length) {
+    return roundBombshellMap[round.id];
+  }
+
+  return round.bombshell_contestant_id ? [round.bombshell_contestant_id] : [];
 }
 
 function CastBoard({ contestants }: { contestants: Contestant[] }) {
@@ -182,7 +203,10 @@ export default function PredictPage() {
   const [nextRowId, setNextRowId] = useState(2);
   const [dumpedPickId, setDumpedPickId] = useState("");
   const [bottomGroupPickId, setBottomGroupPickId] = useState("");
-  const [targetPickId, setTargetPickId] = useState("");
+  const [targetPickIdsByBombshell, setTargetPickIdsByBombshell] = useState<Record<string, string>>(
+    {}
+  );
+  const [roundBombshellMap, setRoundBombshellMap] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -192,12 +216,8 @@ export default function PredictPage() {
   const activeContestants = contestants.filter((contestant) => contestant.status === "active");
   const contestantOptions =
     openRound?.prediction_type === "bombshell_arrival_prediction" ? contestants : activeContestants;
-  const selectedBombshellName =
-    openRound?.bombshell_contestant_id
-      ? contestants.find((contestant) => contestant.id === openRound.bombshell_contestant_id)?.name ??
-        "this bombshell"
-      : "the bombshell";
   const isInitialCouplingRound = openRound?.prediction_type === "initial_coupling_prediction";
+  const selectedBombshellIds = getBombshellIdsForRound(openRound, roundBombshellMap);
 
   useEffect(() => {
     const loadPredictionPage = async () => {
@@ -217,6 +237,7 @@ export default function PredictPage() {
       const [
         { data: contestantsData, error: contestantsError },
         { data: roundsData, error: roundError },
+        { data: roundBombshellsData, error: roundBombshellsError },
       ] = await Promise.all([
         supabase
           .from("contestants")
@@ -228,16 +249,31 @@ export default function PredictPage() {
           .eq("status", "open")
           .order("created_at", { ascending: false })
           .order("title"),
+        supabase
+          .from("round_bombshells")
+          .select("round_id, bombshell_contestant_id"),
       ]);
 
-      if (contestantsError || roundError) {
-        setErrorMessage(contestantsError?.message ?? roundError?.message ?? "Unable to load predictions.");
+      if (contestantsError || roundError || roundBombshellsError) {
+        setErrorMessage(
+          contestantsError?.message ??
+            roundError?.message ??
+            roundBombshellsError?.message ??
+            "Unable to load predictions."
+        );
         setLoading(false);
         return;
       }
 
       setContestants((contestantsData ?? []) as Contestant[]);
       const nextRounds = (roundsData ?? []) as Round[];
+      const nextRoundBombshellMap = ((roundBombshellsData ?? []) as RoundBombshellRow[]).reduce<
+        Record<string, string[]>
+      >((map, row) => {
+        map[row.round_id] = [...(map[row.round_id] ?? []), row.bombshell_contestant_id];
+        return map;
+      }, {});
+      setRoundBombshellMap(nextRoundBombshellMap);
       setOpenRounds(nextRounds);
       setSelectedRoundId((currentValue) => {
         if (currentValue && nextRounds.some((round) => round.id === currentValue)) {
@@ -277,7 +313,7 @@ export default function PredictPage() {
 
       setDumpedPickId("");
       setBottomGroupPickId("");
-      setTargetPickId("");
+      setTargetPickIdsByBombshell({});
 
       if (openRound && isRecouplingPrediction(openRound.prediction_type)) {
         const couplePredictions = typedPredictions.filter(
@@ -320,9 +356,17 @@ export default function PredictPage() {
       if (openRound?.prediction_type === "bombshell_arrival_prediction") {
         setRows([createEmptyRow(1)]);
         setNextRowId(2);
-        setTargetPickId(
-          typedPredictions.find((prediction) => prediction.prediction_role === "target_pick")
-            ?.contestant_1_id ?? ""
+        setTargetPickIdsByBombshell(
+          typedPredictions.reduce<Record<string, string>>((map, prediction) => {
+            if (
+              prediction.prediction_role === "target_pick" &&
+              prediction.bombshell_contestant_id &&
+              prediction.contestant_1_id
+            ) {
+              map[prediction.bombshell_contestant_id] = prediction.contestant_1_id;
+            }
+            return map;
+          }, {})
         );
         return;
       }
@@ -474,26 +518,25 @@ export default function PredictPage() {
     }
 
     if (openRound.prediction_type === "bombshell_arrival_prediction") {
-      if (!openRound.bombshell_contestant_id) {
-        setErrorMessage("Admin still needs to choose which bombshell this round is about.");
+      if (selectedBombshellIds.length === 0) {
+        setErrorMessage("Admin still needs to choose which bombshells this round is about.");
         setSaving(false);
         return;
       }
 
-      if (!targetPickId) {
-        setErrorMessage("Pick who the bombshell goes after.");
+      if (selectedBombshellIds.some((bombshellId) => !targetPickIdsByBombshell[bombshellId])) {
+        setErrorMessage("Pick a target for each bombshell before saving.");
         setSaving(false);
         return;
       }
 
-      predictionRows = [
-        {
-          user_id: user.id,
-          round_id: openRound.id,
-          prediction_role: "target_pick",
-          contestant_1_id: targetPickId,
-        },
-      ];
+      predictionRows = selectedBombshellIds.map((bombshellId) => ({
+        user_id: user.id,
+        round_id: openRound.id,
+        prediction_role: "target_pick",
+        bombshell_contestant_id: bombshellId,
+        contestant_1_id: targetPickIdsByBombshell[bombshellId],
+      }));
     }
 
     if (!predictionRows || predictionRows.length === 0) {
@@ -592,9 +635,12 @@ export default function PredictPage() {
                     {openRounds.map((round) => (
                       <option key={round.id} value={round.id}>
                         {round.title}
-                        {round.prediction_type === "bombshell_arrival_prediction" &&
-                        round.bombshell_contestant_id
-                          ? ` (${getContestantName(contestants, round.bombshell_contestant_id)})`
+                        {round.prediction_type === "bombshell_arrival_prediction"
+                          ? getBombshellIdsForRound(round, roundBombshellMap).length > 0
+                            ? ` (${getBombshellIdsForRound(round, roundBombshellMap)
+                                .map((bombshellId) => getContestantName(contestants, bombshellId))
+                                .join(" + ")})`
+                            : ` (${getPredictionTypeLabel(round.prediction_type)})`
                           : ` (${getPredictionTypeLabel(round.prediction_type)})`}
                       </option>
                     ))}
@@ -728,23 +774,40 @@ export default function PredictPage() {
               ) : openRound?.prediction_type === "bombshell_arrival_prediction" ? (
                 <div className="mt-6 space-y-4">
                   <div className="rounded-2xl border border-blue-500/25 bg-blue-500/8 p-4 text-sm text-blue-100">
-                    <p>
-                      <span className="font-semibold">{selectedBombshellName} goes after:</span>{" "}
-                      {getContestantName(contestantOptions, targetPickId)}
-                    </p>
+                    <div className="space-y-2">
+                      {selectedBombshellIds.map((bombshellId) => (
+                        <p key={bombshellId}>
+                          <span className="font-semibold">
+                            {getContestantName(contestants, bombshellId)} goes after:
+                          </span>{" "}
+                          {getContestantName(
+                            contestantOptions,
+                            targetPickIdsByBombshell[bombshellId] ?? ""
+                          )}
+                        </p>
+                      ))}
+                    </div>
                   </div>
-                  {!openRound.bombshell_contestant_id ? (
+                  {selectedBombshellIds.length === 0 ? (
                     <div className="rounded-2xl border border-red-500/30 bg-red-950/40 p-4 text-sm text-red-200">
-                      Admin still needs to set which bombshell this round is about before players can lock in picks.
+                      Admin still needs to set which bombshells this round is about before players can lock in picks.
                     </div>
                   ) : null}
-                  <ContestantPicker
-                    contestants={contestants}
-                    label={`Who does ${selectedBombshellName} go after?`}
-                    helperText="Every cast member is fair game here. Pick the islander you think gets targeted first."
-                    selectedId={targetPickId}
-                    onSelect={setTargetPickId}
-                  />
+                  {selectedBombshellIds.map((bombshellId) => (
+                    <ContestantPicker
+                      key={bombshellId}
+                      contestants={contestants}
+                      label={`Who does ${getContestantName(contestants, bombshellId)} go after?`}
+                      helperText="Every cast member is fair game here. Pick the islander you think gets targeted first."
+                      selectedId={targetPickIdsByBombshell[bombshellId] ?? ""}
+                      onSelect={(contestantId) =>
+                        setTargetPickIdsByBombshell((currentValue) => ({
+                          ...currentValue,
+                          [bombshellId]: contestantId,
+                        }))
+                      }
+                    />
+                  ))}
                 </div>
               ) : (
                 <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-5 text-sm text-zinc-300">
@@ -765,7 +828,7 @@ export default function PredictPage() {
                     !openRound ||
                     isNoScoreEpisode(openRound.prediction_type) ||
                     (openRound.prediction_type === "bombshell_arrival_prediction" &&
-                      !openRound.bombshell_contestant_id)
+                      selectedBombshellIds.length === 0)
                   }
                   className="rounded-full bg-pink-500 px-5 py-3 text-sm font-semibold text-black transition hover:bg-pink-400 disabled:cursor-not-allowed disabled:bg-pink-300"
                 >

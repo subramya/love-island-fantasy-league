@@ -442,7 +442,7 @@ export default function Home() {
               <div className="rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-5">
                 <p className="font-semibold text-yellow-100">Bombshell arrival prediction</p>
                 <p className="mt-2 text-sm text-zinc-300/80">
-                  Correctly guess who the bombshell goes after: +5
+                  Correctly guess who each bombshell goes after: +5 each
                 </p>
               </div>
 

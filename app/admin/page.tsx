@@ -34,6 +34,11 @@ type Round = {
   status: string;
 };
 
+type RoundBombshellRow = {
+  round_id: string;
+  bombshell_contestant_id: string;
+};
+
 type LeagueMember = {
   id: string;
   name: string;
@@ -56,6 +61,7 @@ type CoupleFormRow = {
 };
 
 type RoundResultRow = {
+  bombshell_contestant_id?: string | null;
   result_type: string;
   contestant_id: string | null;
 };
@@ -76,6 +82,47 @@ function getContestantDisplayName(contestants: Contestant[], contestantId: strin
   return contestants.find((contestant) => contestant.id === contestantId)?.name ?? "Unknown islander";
 }
 
+function toggleContestantId(currentValue: string[], contestantId: string) {
+  return currentValue.includes(contestantId)
+    ? currentValue.filter((id) => id !== contestantId)
+    : [...currentValue, contestantId];
+}
+
+type BombshellSelectorGroupProps = {
+  contestants: Contestant[];
+  selectedIds: string[];
+  onToggle: (contestantId: string) => void;
+};
+
+function BombshellSelectorGroup({
+  contestants,
+  selectedIds,
+  onToggle,
+}: BombshellSelectorGroupProps) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {contestants.map((contestant) => {
+        const isSelected = selectedIds.includes(contestant.id);
+
+        return (
+          <button
+            key={contestant.id}
+            type="button"
+            onClick={() => onToggle(contestant.id)}
+            className={`rounded-2xl border px-4 py-3 text-left text-sm font-medium transition ${
+              isSelected
+                ? "border-sky-400 bg-sky-500/12 text-sky-100"
+                : "border-zinc-800 bg-zinc-950 text-zinc-200 hover:border-sky-400/60 hover:bg-zinc-900"
+            }`}
+          >
+            {contestant.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function AdminPage() {
   const [adminPassword, setAdminPassword] = useState("");
   const [isUnlocked, setIsUnlocked] = useState(false);
@@ -91,8 +138,10 @@ export default function AdminPage() {
   const [contestantTypes, setContestantTypes] = useState<Record<string, string>>({});
   const [roundTitle, setRoundTitle] = useState("");
   const [predictionType, setPredictionType] = useState("recoupling_prediction");
-  const [selectedBombshellContestantId, setSelectedBombshellContestantId] = useState("");
-  const [roundBombshellSelections, setRoundBombshellSelections] = useState<Record<string, string>>({});
+  const [selectedBombshellContestantIds, setSelectedBombshellContestantIds] = useState<string[]>([]);
+  const [roundBombshellSelections, setRoundBombshellSelections] = useState<Record<string, string[]>>(
+    {}
+  );
   const [roundStatus, setRoundStatus] = useState("open");
   const [selectedActualRoundId, setSelectedActualRoundId] = useState("");
   const [scoringRoundId, setScoringRoundId] = useState("");
@@ -105,13 +154,22 @@ export default function AdminPage() {
   const [nextCoupleRowId, setNextCoupleRowId] = useState(2);
   const [actualDumpedContestantId, setActualDumpedContestantId] = useState("");
   const [actualBottomGroupContestantId, setActualBottomGroupContestantId] = useState("");
-  const [actualBombshellTargetId, setActualBombshellTargetId] = useState("");
+  const [actualBombshellTargetIdsByBombshell, setActualBombshellTargetIdsByBombshell] = useState<
+    Record<string, string>
+  >({});
   const [notificationDraft, setNotificationDraft] = useState<NotificationDraft | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const activeContestants = contestants.filter((contestant) => contestant.status === "active");
   const selectedActualRound =
     rounds.find((round) => round.id === selectedActualRoundId) ?? null;
+  const selectedActualRoundBombshellIds = selectedActualRound
+    ? roundBombshellSelections[selectedActualRound.id]?.length
+      ? roundBombshellSelections[selectedActualRound.id]
+      : selectedActualRound.bombshell_contestant_id
+        ? [selectedActualRound.bombshell_contestant_id]
+        : []
+    : [];
 
   const loadAdminData = async () => {
     setLoading(true);
@@ -121,6 +179,7 @@ export default function AdminPage() {
       { data: contestantsData, error: contestantsError },
       { data: roundsData, error: roundsError },
       { data: leagueMembersData, error: leagueMembersError },
+      { data: roundBombshellsData, error: roundBombshellsError },
     ] = await Promise.all([
       supabase
         .from("contestants")
@@ -134,13 +193,17 @@ export default function AdminPage() {
         .from("league_users")
         .select("id, name, email")
         .order("name"),
+      supabase
+        .from("round_bombshells")
+        .select("round_id, bombshell_contestant_id"),
     ]);
 
-    if (contestantsError || roundsError || leagueMembersError) {
+    if (contestantsError || roundsError || leagueMembersError || roundBombshellsError) {
       setErrorMessage(
         contestantsError?.message ??
           roundsError?.message ??
           leagueMembersError?.message ??
+          roundBombshellsError?.message ??
           "Unable to load admin data."
       );
       setLoading(false);
@@ -149,12 +212,23 @@ export default function AdminPage() {
 
     const nextContestants = (contestantsData ?? []) as Contestant[];
     const nextRounds = (roundsData ?? []) as Round[];
+    const nextRoundBombshellSelections = ((roundBombshellsData ?? []) as RoundBombshellRow[]).reduce<
+      Record<string, string[]>
+    >((map, row) => {
+      map[row.round_id] = [...(map[row.round_id] ?? []), row.bombshell_contestant_id];
+      return map;
+    }, {});
 
     setContestants(nextContestants);
     setRounds(nextRounds);
     setRoundBombshellSelections(
-      nextRounds.reduce<Record<string, string>>((map, round) => {
-        map[round.id] = round.bombshell_contestant_id ?? "";
+      nextRounds.reduce<Record<string, string[]>>((map, round) => {
+        map[round.id] =
+          nextRoundBombshellSelections[round.id]?.length
+            ? nextRoundBombshellSelections[round.id]
+            : round.bombshell_contestant_id
+              ? [round.bombshell_contestant_id]
+              : [];
         return map;
       }, {})
     );
@@ -188,7 +262,7 @@ export default function AdminPage() {
         setNextCoupleRowId(2);
         setActualDumpedContestantId("");
         setActualBottomGroupContestantId("");
-        setActualBombshellTargetId("");
+        setActualBombshellTargetIdsByBombshell({});
         return;
       }
 
@@ -225,7 +299,7 @@ export default function AdminPage() {
 
         setActualDumpedContestantId("");
         setActualBottomGroupContestantId("");
-        setActualBombshellTargetId("");
+        setActualBombshellTargetIdsByBombshell({});
         return;
       }
 
@@ -235,7 +309,7 @@ export default function AdminPage() {
       ) {
         const { data, error } = await supabase
           .from("round_results")
-          .select("result_type, contestant_id")
+          .select("result_type, contestant_id, bombshell_contestant_id")
           .eq("round_id", selectedActualRound.id);
 
         if (error) {
@@ -253,8 +327,17 @@ export default function AdminPage() {
           typedResults.find((result) => result.result_type === "bottom_group_pick")?.contestant_id ??
             ""
         );
-        setActualBombshellTargetId(
-          typedResults.find((result) => result.result_type === "target_pick")?.contestant_id ?? ""
+        setActualBombshellTargetIdsByBombshell(
+          typedResults.reduce<Record<string, string>>((map, result) => {
+            if (
+              result.result_type === "target_pick" &&
+              result.bombshell_contestant_id &&
+              result.contestant_id
+            ) {
+              map[result.bombshell_contestant_id] = result.contestant_id;
+            }
+            return map;
+          }, {})
         );
         return;
       }
@@ -263,7 +346,7 @@ export default function AdminPage() {
       setNextCoupleRowId(2);
       setActualDumpedContestantId("");
       setActualBottomGroupContestantId("");
-      setActualBombshellTargetId("");
+      setActualBombshellTargetIdsByBombshell({});
     };
 
     void loadSelectedRoundResults();
@@ -343,24 +426,28 @@ export default function AdminPage() {
       { error: deletePredictionsError },
       { error: deleteActualCouplesError },
       { error: deleteRoundResultsError },
+      { error: deleteRoundBombshellsError },
     ] = await Promise.all([
       supabase.from("scores").delete().eq("round_id", roundId),
       supabase.from("predictions").delete().eq("round_id", roundId),
       supabase.from("actual_couples").delete().eq("round_id", roundId),
       supabase.from("round_results").delete().eq("round_id", roundId),
+      supabase.from("round_bombshells").delete().eq("round_id", roundId),
     ]);
 
     if (
       deleteScoresError ||
       deletePredictionsError ||
       deleteActualCouplesError ||
-      deleteRoundResultsError
+      deleteRoundResultsError ||
+      deleteRoundBombshellsError
     ) {
       setErrorMessage(
         deleteScoresError?.message ??
           deletePredictionsError?.message ??
           deleteActualCouplesError?.message ??
           deleteRoundResultsError?.message ??
+          deleteRoundBombshellsError?.message ??
           "Unable to clear round data before deletion."
       );
       return;
@@ -387,8 +474,11 @@ export default function AdminPage() {
       return;
     }
 
-    if (predictionType === "bombshell_arrival_prediction" && !selectedBombshellContestantId) {
-      setErrorMessage("Choose which bombshell this round is about.");
+    if (
+      predictionType === "bombshell_arrival_prediction" &&
+      selectedBombshellContestantIds.length === 0
+    ) {
+      setErrorMessage("Choose at least one bombshell for this round.");
       setSuccessMessage("");
       return;
     }
@@ -396,41 +486,83 @@ export default function AdminPage() {
     setErrorMessage("");
     setSuccessMessage("");
 
-    const { error } = await supabase.from("rounds").insert({
-      title: roundTitle.trim(),
-      prediction_type: predictionType.trim(),
-      bombshell_contestant_id:
-        predictionType === "bombshell_arrival_prediction"
-          ? selectedBombshellContestantId
-          : null,
-      status: roundStatus,
-    });
+    const { data: insertedRound, error } = await supabase
+      .from("rounds")
+      .insert({
+        title: roundTitle.trim(),
+        prediction_type: predictionType.trim(),
+        bombshell_contestant_id:
+          predictionType === "bombshell_arrival_prediction"
+            ? selectedBombshellContestantIds[0]
+            : null,
+        status: roundStatus,
+      })
+      .select("id")
+      .single();
 
     if (error) {
       setErrorMessage(error.message);
       return;
     }
 
+    if (predictionType === "bombshell_arrival_prediction" && insertedRound) {
+      const { error: insertBombshellsError } = await supabase.from("round_bombshells").insert(
+        selectedBombshellContestantIds.map((contestantId) => ({
+          round_id: insertedRound.id,
+          bombshell_contestant_id: contestantId,
+        }))
+      );
+
+      if (insertBombshellsError) {
+        setErrorMessage(insertBombshellsError.message);
+        return;
+      }
+    }
+
     setRoundTitle("");
     setPredictionType("recoupling_prediction");
-    setSelectedBombshellContestantId("");
+    setSelectedBombshellContestantIds([]);
     setRoundStatus("open");
     setSuccessMessage("Round created.");
     await loadAdminData();
   };
 
   const saveRoundBombshellSelection = async (roundId: string) => {
-    const selectedContestantId = roundBombshellSelections[roundId] ?? "";
+    const selectedContestantIds = roundBombshellSelections[roundId] ?? [];
 
-    if (!selectedContestantId) {
-      setErrorMessage("Choose the bombshell before saving.");
+    if (selectedContestantIds.length === 0) {
+      setErrorMessage("Choose at least one bombshell before saving.");
+      setSuccessMessage("");
+      return;
+    }
+
+    const { error: deleteBombshellsError } = await supabase
+      .from("round_bombshells")
+      .delete()
+      .eq("round_id", roundId);
+
+    if (deleteBombshellsError) {
+      setErrorMessage(deleteBombshellsError.message);
+      setSuccessMessage("");
+      return;
+    }
+
+    const { error: insertBombshellsError } = await supabase.from("round_bombshells").insert(
+      selectedContestantIds.map((contestantId) => ({
+        round_id: roundId,
+        bombshell_contestant_id: contestantId,
+      }))
+    );
+
+    if (insertBombshellsError) {
+      setErrorMessage(insertBombshellsError.message);
       setSuccessMessage("");
       return;
     }
 
     const { error } = await supabase
       .from("rounds")
-      .update({ bombshell_contestant_id: selectedContestantId })
+      .update({ bombshell_contestant_id: selectedContestantIds[0] ?? null })
       .eq("id", roundId);
 
     if (error) {
@@ -439,7 +571,7 @@ export default function AdminPage() {
       return;
     }
 
-    setSuccessMessage("Bombshell focus saved for that round.");
+    setSuccessMessage("Bombshell lineup saved for that round.");
     setErrorMessage("");
     await loadAdminData();
   };
@@ -606,8 +738,18 @@ export default function AdminPage() {
       return;
     }
 
-    if (!actualBombshellTargetId) {
-      setErrorMessage("Choose who the bombshell actually went after.");
+    if (selectedActualRoundBombshellIds.length === 0) {
+      setErrorMessage("Set at least one bombshell for this round before saving results.");
+      setSuccessMessage("");
+      return;
+    }
+
+    if (
+      selectedActualRoundBombshellIds.some(
+        (bombshellId) => !actualBombshellTargetIdsByBombshell[bombshellId]
+      )
+    ) {
+      setErrorMessage("Choose who each bombshell actually went after.");
       setSuccessMessage("");
       return;
     }
@@ -623,11 +765,14 @@ export default function AdminPage() {
       return;
     }
 
-    const { error: insertError } = await supabase.from("round_results").insert({
-      round_id: selectedActualRoundId,
-      result_type: "target_pick",
-      contestant_id: actualBombshellTargetId,
-    });
+    const { error: insertError } = await supabase.from("round_results").insert(
+      selectedActualRoundBombshellIds.map((bombshellId) => ({
+        round_id: selectedActualRoundId,
+        result_type: "target_pick",
+        bombshell_contestant_id: bombshellId,
+        contestant_id: actualBombshellTargetIdsByBombshell[bombshellId],
+      }))
+    );
 
     if (insertError) {
       setErrorMessage(insertError.message);
@@ -635,7 +780,7 @@ export default function AdminPage() {
       return;
     }
 
-    setSuccessMessage("Bombshell result saved.");
+    setSuccessMessage("Bombshell results saved.");
     setErrorMessage("");
   };
 
@@ -716,9 +861,21 @@ export default function AdminPage() {
       return;
     }
 
+    const selectedBombshellIds =
+      roundBombshellSelections[round.id]?.length
+        ? roundBombshellSelections[round.id]
+        : round.bombshell_contestant_id
+          ? [round.bombshell_contestant_id]
+          : [];
+
     const bombshellFocusLine =
-      round.prediction_type === "bombshell_arrival_prediction" && round.bombshell_contestant_id
-        ? [`Bombshell focus: ${getContestantDisplayName(contestants, round.bombshell_contestant_id)}`, ""]
+      round.prediction_type === "bombshell_arrival_prediction" && selectedBombshellIds.length > 0
+        ? [
+            `Bombshell focus: ${selectedBombshellIds
+              .map((contestantId) => getContestantDisplayName(contestants, contestantId))
+              .join(", ")}`,
+            "",
+          ]
         : [];
 
     const subject = `New Love Island round: ${round.title}`;
@@ -1200,7 +1357,7 @@ export default function AdminPage() {
                     const nextPredictionType = event.target.value;
                     setPredictionType(nextPredictionType);
                     if (nextPredictionType !== "bombshell_arrival_prediction") {
-                      setSelectedBombshellContestantId("");
+                      setSelectedBombshellContestantIds([]);
                     }
                   }}
                   className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition focus:border-pink-400"
@@ -1214,21 +1371,18 @@ export default function AdminPage() {
               </label>
               {predictionType === "bombshell_arrival_prediction" ? (
                 <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
-                  Which bombshell is this round about?
-                  <select
-                    value={selectedBombshellContestantId}
-                    onChange={(event) => setSelectedBombshellContestantId(event.target.value)}
-                    className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
-                  >
-                    <option value="">Select the bombshell</option>
-                    {activeContestants.map((contestant) => (
-                      <option key={contestant.id} value={contestant.id}>
-                        {contestant.name}
-                      </option>
-                    ))}
-                  </select>
+                  Which bombshells are in this round?
+                  <BombshellSelectorGroup
+                    contestants={activeContestants}
+                    selectedIds={selectedBombshellContestantIds}
+                    onToggle={(contestantId) =>
+                      setSelectedBombshellContestantIds((currentValue) =>
+                        toggleContestantId(currentValue, contestantId)
+                      )
+                    }
+                  />
                   <span className="text-xs text-zinc-500">
-                    This keeps the player prompt specific when multiple bombshells enter close together.
+                    Pick one or more bombshells. Players will get one target question per bombshell.
                   </span>
                 </label>
               ) : null}
@@ -1240,7 +1394,13 @@ export default function AdminPage() {
                 {predictionType === "bombshell_arrival_prediction" ? (
                   <p className="mt-1 text-zinc-400">
                     Bombshell focus:{" "}
-                    {getContestantDisplayName(contestants, selectedBombshellContestantId || null)}
+                    {selectedBombshellContestantIds.length > 0
+                      ? selectedBombshellContestantIds
+                          .map((contestantId) =>
+                            getContestantDisplayName(contestants, contestantId)
+                          )
+                          .join(", ")
+                      : "Not set"}
                   </p>
                 ) : null}
                 <p className="mt-1 text-zinc-400">
@@ -1484,31 +1644,47 @@ export default function AdminPage() {
                 <p className="text-sm text-sky-200">
                   Bombshell focus:{" "}
                   <span className="font-semibold">
-                    {getContestantDisplayName(contestants, selectedActualRound.bombshell_contestant_id)}
+                    {selectedActualRoundBombshellIds.length > 0
+                      ? selectedActualRoundBombshellIds
+                          .map((contestantId) =>
+                            getContestantDisplayName(contestants, contestantId)
+                          )
+                          .join(", ")
+                      : "Not set"}
                   </span>
                 </p>
-                <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
-                  Who did the bombshell actually go after?
-                  <select
-                    value={actualBombshellTargetId}
-                    onChange={(event) => setActualBombshellTargetId(event.target.value)}
-                    className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
+                {selectedActualRoundBombshellIds.map((bombshellId) => (
+                  <label
+                    key={bombshellId}
+                    className="flex flex-col gap-2 text-sm font-medium text-zinc-300"
                   >
-                    <option value="">Select the actual target</option>
-                    {contestants.map((contestant) => (
-                      <option key={contestant.id} value={contestant.id}>
-                        {contestant.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    Who did {getContestantDisplayName(contestants, bombshellId)} actually go after?
+                    <select
+                      value={actualBombshellTargetIdsByBombshell[bombshellId] ?? ""}
+                      onChange={(event) =>
+                        setActualBombshellTargetIdsByBombshell((currentValue) => ({
+                          ...currentValue,
+                          [bombshellId]: event.target.value,
+                        }))
+                      }
+                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
+                    >
+                      <option value="">Select the actual target</option>
+                      {contestants.map((contestant) => (
+                        <option key={contestant.id} value={contestant.id}>
+                          {contestant.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
                 <button
                   type="button"
                   onClick={saveBombshellResults}
-                  disabled={!selectedActualRound.bombshell_contestant_id}
+                  disabled={selectedActualRoundBombshellIds.length === 0}
                   className="rounded-full bg-sky-400 px-5 py-3 text-sm font-semibold text-black transition hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-sky-200"
                 >
-                  Save bombshell result
+                  Save bombshell results
                 </button>
               </div>
             ) : null}
@@ -1572,7 +1748,16 @@ export default function AdminPage() {
                         <p className="mt-2 text-sm text-sky-200">
                           Bombshell focus:{" "}
                           <span className="font-semibold">
-                            {getContestantDisplayName(contestants, round.bombshell_contestant_id)}
+                            {(roundBombshellSelections[round.id]?.length
+                              ? roundBombshellSelections[round.id]
+                              : round.bombshell_contestant_id
+                                ? [round.bombshell_contestant_id]
+                                : []
+                            )
+                              .map((contestantId) =>
+                                getContestantDisplayName(contestants, contestantId)
+                              )
+                              .join(", ") || "Not set"}
                           </span>
                         </p>
                       ) : null}
@@ -1582,31 +1767,27 @@ export default function AdminPage() {
                       {round.prediction_type === "bombshell_arrival_prediction" ? (
                         <div className="mt-4 flex flex-col gap-2 sm:max-w-sm">
                           <label className="text-sm font-medium text-zinc-300">
-                            Which bombshell is this round about?
+                            Which bombshells are in this round?
                           </label>
-                          <select
-                            value={roundBombshellSelections[round.id] ?? ""}
-                            onChange={(event) =>
+                          <BombshellSelectorGroup
+                            contestants={activeContestants}
+                            selectedIds={roundBombshellSelections[round.id] ?? []}
+                            onToggle={(contestantId) =>
                               setRoundBombshellSelections((currentValue) => ({
                                 ...currentValue,
-                                [round.id]: event.target.value,
+                                [round.id]: toggleContestantId(
+                                  currentValue[round.id] ?? [],
+                                  contestantId
+                                ),
                               }))
                             }
-                            className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
-                          >
-                            <option value="">Select the bombshell</option>
-                            {activeContestants.map((contestant) => (
-                              <option key={contestant.id} value={contestant.id}>
-                                {contestant.name}
-                              </option>
-                            ))}
-                          </select>
+                          />
                           <button
                             type="button"
                             onClick={() => saveRoundBombshellSelection(round.id)}
                             className="w-fit rounded-full border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-100 transition hover:border-sky-300 hover:bg-sky-500/20"
                           >
-                            Save bombshell focus
+                            Save bombshell lineup
                           </button>
                         </div>
                       ) : null}
