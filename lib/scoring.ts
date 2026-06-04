@@ -247,11 +247,11 @@ export async function runRoundScoring(supabase: SupabaseClient, roundId: string)
     ] = await Promise.all([
       supabase
         .from("predictions")
-        .select("user_id, contestant_1_id, prediction_role")
+        .select("user_id, contestant_1_id, prediction_role, bombshell_contestant_id")
         .eq("round_id", roundId),
       supabase
         .from("round_results")
-        .select("result_type, contestant_id")
+        .select("result_type, contestant_id, bombshell_contestant_id")
         .eq("round_id", roundId),
     ]);
 
