@@ -927,9 +927,7 @@ export default function AdminPage() {
 
     const { data: scoreRows, error: scoreError } = await supabase
       .from("scores")
-      .select("user_id, points")
-      .eq("round_id", leaderboardRoundId)
-      .order("points", { ascending: false });
+      .select("user_id, points, round_id");
 
     if (scoreError) {
       setErrorMessage(scoreError.message);
@@ -937,15 +935,61 @@ export default function AdminPage() {
       return;
     }
 
+    const typedScoreRows = (scoreRows ?? []) as Array<{
+      user_id: string;
+      points: number;
+      round_id: string;
+    }>;
+
     const memberNameMap = new Map(leagueMembers.map((member) => [member.id, member.name]));
-    const topRows = (scoreRows ?? []).slice(0, 5);
+    const totalPointsByUser = typedScoreRows.reduce<Map<string, number>>((map, score) => {
+      map.set(score.user_id, (map.get(score.user_id) ?? 0) + score.points);
+      return map;
+    }, new Map());
+    const roundPointsByUser = typedScoreRows.reduce<Map<string, number>>((map, score) => {
+      if (score.round_id === leaderboardRoundId) {
+        map.set(score.user_id, (map.get(score.user_id) ?? 0) + score.points);
+      }
+      return map;
+    }, new Map());
+
+    const overallLeaderboard = leagueMembers
+      .map((member) => ({
+        user_id: member.id,
+        name: member.name,
+        totalPoints: totalPointsByUser.get(member.id) ?? 0,
+        roundPoints: roundPointsByUser.get(member.id) ?? 0,
+      }))
+      .sort((left, right) => {
+        if (right.totalPoints !== left.totalPoints) {
+          return right.totalPoints - left.totalPoints;
+        }
+
+        return left.name.localeCompare(right.name);
+      });
+
+    const topRows = overallLeaderboard.slice(0, 5);
     const leaderboardLines =
       topRows.length > 0
-        ? topRows.map((score, index) => {
-            const playerName = memberNameMap.get(score.user_id) ?? "Unknown player";
-            return `${index + 1}. ${playerName} — ${score.points} pts`;
+        ? topRows.map((entry, index) => {
+            const roundPointsLabel =
+              entry.roundPoints > 0
+                ? ` (+${entry.roundPoints} this round)`
+                : entry.roundPoints < 0
+                  ? ` (${entry.roundPoints} this round)`
+                  : " (+0 this round)";
+
+            return `${index + 1}. ${entry.name} — ${entry.totalPoints} pts total${roundPointsLabel}`;
           })
-        : ["No scores have been posted for this round yet."];
+        : ["No leaderboard results are available yet."];
+
+    const roundScoringLines = overallLeaderboard
+      .filter((entry) => entry.roundPoints !== 0)
+      .slice(0, 5)
+      .map(
+        (entry) =>
+          `${entry.name} ${entry.roundPoints > 0 ? `+${entry.roundPoints}` : entry.roundPoints} this round`
+      );
 
     const subject = `Leaderboard update: ${selectedRound.title}`;
     const body = [
@@ -953,8 +997,11 @@ export default function AdminPage() {
       "",
       `The leaderboard has been updated for ${selectedRound.title}.`,
       "",
-      "Current top spots:",
+      "Current overall top spots:",
       ...leaderboardLines,
+      ...(roundScoringLines.length > 0
+        ? ["", "Biggest point swings from this round:", ...roundScoringLines]
+        : []),
       "",
       "Check the full leaderboard here:",
       `${window.location.origin}/leaderboard`,
