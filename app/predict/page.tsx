@@ -39,6 +39,7 @@ type PredictionFormRow = {
 };
 
 type StoredPrediction = {
+  created_at?: string | null;
   bombshell_contestant_id?: string | null;
   contestant_1_id: string | null;
   contestant_2_id: string | null;
@@ -82,6 +83,101 @@ function getBombshellIdsForRound(
   }
 
   return round.bombshell_contestant_id ? [round.bombshell_contestant_id] : [];
+}
+
+function formatSavedPredictionSummary(
+  round: Round | null,
+  contestants: Contestant[],
+  predictions: StoredPrediction[],
+  roundBombshellMap: Record<string, string[]>
+) {
+  if (!round || predictions.length === 0) {
+    return "No saved predictions yet for this round.";
+  }
+
+  if (isRecouplingPrediction(round.prediction_type)) {
+    const pairs = predictions
+      .filter(
+        (prediction) =>
+          (prediction.prediction_role === "couple_pick" || prediction.prediction_role == null) &&
+          prediction.contestant_1_id &&
+          prediction.contestant_2_id
+      )
+      .map(
+        (prediction) =>
+          `${getContestantName(contestants, prediction.contestant_1_id ?? "")} + ${getContestantName(
+            contestants,
+            prediction.contestant_2_id ?? ""
+          )}`
+      );
+
+    return pairs.length > 0 ? pairs.join(" • ") : "No couples saved yet.";
+  }
+
+  if (round.prediction_type === "elimination_prediction") {
+    const dumpedPick = predictions.find((prediction) => prediction.prediction_role === "dumped_pick");
+    const bottomGroupPick = predictions.find(
+      (prediction) => prediction.prediction_role === "bottom_group_pick"
+    );
+
+    return [
+      `Dumped: ${getContestantName(contestants, dumpedPick?.contestant_1_id ?? "")}`,
+      `Danger: ${bottomGroupPick?.contestant_1_id ? getContestantName(contestants, bottomGroupPick.contestant_1_id) : "No pick"}`,
+    ].join(" • ");
+  }
+
+  if (round.prediction_type === "bombshell_arrival_prediction") {
+    const bombshellIds = getBombshellIdsForRound(round, roundBombshellMap);
+
+    if (bombshellIds.length === 0) {
+      return "Admin still needs to choose which bombshells this round is about.";
+    }
+
+    return bombshellIds
+      .map((bombshellId) => {
+        const targetPrediction = predictions.find(
+          (prediction) =>
+            prediction.prediction_role === "target_pick" &&
+            prediction.bombshell_contestant_id === bombshellId
+        );
+
+        return `${getContestantName(contestants, bombshellId)} -> ${getContestantName(
+          contestants,
+          targetPrediction?.contestant_1_id ?? ""
+        )}`;
+      })
+      .join(" • ");
+  }
+
+  return "This round does not use saved predictions.";
+}
+
+function formatSavedPredictionTime(timestamp: string | null) {
+  if (!timestamp) {
+    return "";
+  }
+
+  const date = new Date(timestamp);
+
+  const eastern = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(date);
+
+  const pacific = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(date);
+
+  return `${eastern} / ${pacific}`;
 }
 
 function CastBoard({ contestants }: { contestants: Contestant[] }) {
@@ -206,6 +302,8 @@ export default function PredictPage() {
   const [targetPickIdsByBombshell, setTargetPickIdsByBombshell] = useState<Record<string, string>>(
     {}
   );
+  const [savedPredictions, setSavedPredictions] = useState<StoredPrediction[]>([]);
+  const [savedPredictionUpdatedAt, setSavedPredictionUpdatedAt] = useState<string | null>(null);
   const [roundBombshellMap, setRoundBombshellMap] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -294,12 +392,16 @@ export default function PredictPage() {
       if (!user || !selectedRoundId) {
         setRows([createEmptyRow(1)]);
         setNextRowId(2);
+        setSavedPredictions([]);
+        setSavedPredictionUpdatedAt(null);
         return;
       }
 
       const { data: existingPredictions, error: predictionsError } = await supabase
         .from("predictions")
-        .select("contestant_1_id, contestant_2_id, prediction_role")
+        .select(
+          "contestant_1_id, contestant_2_id, prediction_role, bombshell_contestant_id, created_at"
+        )
         .eq("round_id", selectedRoundId)
         .eq("user_id", user.id)
         .order("created_at");
@@ -310,6 +412,12 @@ export default function PredictPage() {
       }
 
       const typedPredictions = (existingPredictions ?? []) as StoredPrediction[];
+      setSavedPredictions(typedPredictions);
+      setSavedPredictionUpdatedAt(
+        typedPredictions.length > 0
+          ? typedPredictions[typedPredictions.length - 1]?.created_at ?? null
+          : null
+      );
 
       setDumpedPickId("");
       setBottomGroupPickId("");
@@ -433,6 +541,8 @@ export default function PredictPage() {
     }
 
     if (isNoScoreEpisode(openRound.prediction_type)) {
+      setSavedPredictions([]);
+      setSavedPredictionUpdatedAt(null);
       setSuccessMessage("This is a no-score episode, so there is nothing to save.");
       setSaving(false);
       return;
@@ -545,11 +655,23 @@ export default function PredictPage() {
       return;
     }
 
-    const { error: insertError } = await supabase.from("predictions").insert(predictionRows);
+    const { data: insertedPredictions, error: insertError } = await supabase
+      .from("predictions")
+      .insert(predictionRows)
+      .select(
+        "contestant_1_id, contestant_2_id, prediction_role, bombshell_contestant_id, created_at"
+      );
 
     if (insertError) {
       setErrorMessage(formatPredictionErrorMessage(insertError.message));
     } else {
+      const typedPredictions = (insertedPredictions ?? []) as StoredPrediction[];
+      setSavedPredictions(typedPredictions);
+      setSavedPredictionUpdatedAt(
+        typedPredictions.length > 0
+          ? typedPredictions[typedPredictions.length - 1]?.created_at ?? null
+          : new Date().toISOString()
+      );
       setSuccessMessage("Predictions saved.");
     }
 
@@ -651,6 +773,26 @@ export default function PredictPage() {
                 <div className="mt-5 rounded-2xl border border-blue-500/30 bg-blue-500/8 p-4 text-sm text-blue-100">
                   Your picks auto-load when you switch between open rounds, so you can test each
                   format without losing what you already saved.
+                </div>
+              ) : null}
+              {openRound && !isNoScoreEpisode(openRound.prediction_type) ? (
+                <div className="mt-5 rounded-2xl border border-emerald-500/25 bg-emerald-500/8 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-200/90">
+                    Saved for this round
+                  </p>
+                  <p className="mt-2 text-sm leading-7 text-emerald-50">
+                    {formatSavedPredictionSummary(
+                      openRound,
+                      contestants,
+                      savedPredictions,
+                      roundBombshellMap
+                    )}
+                  </p>
+                  <p className="mt-2 text-xs text-emerald-200/75">
+                    {savedPredictionUpdatedAt
+                      ? `Last updated: ${formatSavedPredictionTime(savedPredictionUpdatedAt)}`
+                      : "No saved predictions yet."}
+                  </p>
                 </div>
               ) : null}
             </section>

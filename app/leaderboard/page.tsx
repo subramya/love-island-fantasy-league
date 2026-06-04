@@ -4,6 +4,10 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getStoredLeagueUser, type LeagueUser as StoredLeagueUser } from "@/lib/leagueUser";
 import { getPredictionTypeLabel, isRecouplingPrediction } from "@/lib/predictionTypes";
+import {
+  isExactCoupleMatch,
+  sharesOnePerson,
+} from "@/lib/scoring";
 import { supabase } from "@/lib/supabaseClient";
 
 type LeagueUserRow = {
@@ -35,6 +39,15 @@ type ScoreRow = {
   round_id: string;
 };
 
+type PredictionRow = {
+  user_id: string;
+  round_id: string;
+  prediction_role: string | null;
+  bombshell_contestant_id?: string | null;
+  contestant_1_id: string | null;
+  contestant_2_id: string | null;
+};
+
 type ActualCouple = {
   round_id: string;
   contestant_1_id: string;
@@ -60,8 +73,22 @@ type RoundResultSummary = {
   predictionType: string;
   status: string;
   resultSummary: string;
+  playerPredictionSummary: string;
+  scoreBreakdown: string[];
   playerPoints: number;
 };
+
+function getContestantName(
+  contestantsById: Map<string, string>,
+  contestantId: string | null | undefined,
+  fallback = "Not set"
+) {
+  if (!contestantId) {
+    return fallback;
+  }
+
+  return contestantsById.get(contestantId) ?? "Unknown";
+}
 
 function describeRoundResults(
   round: Round,
@@ -131,6 +158,215 @@ function describeRoundResults(
   return "No results summary for this round type.";
 }
 
+function describePlayerPredictions(
+  round: Round,
+  contestantsById: Map<string, string>,
+  predictions: PredictionRow[],
+  roundBombshellMap: Map<string, string[]>
+) {
+  if (isRecouplingPrediction(round.prediction_type)) {
+    const couplePredictions = predictions.filter(
+      (prediction) =>
+        (prediction.prediction_role === "couple_pick" || prediction.prediction_role == null) &&
+        prediction.contestant_1_id &&
+        prediction.contestant_2_id
+    );
+
+    if (couplePredictions.length === 0) {
+      return "No couples saved.";
+    }
+
+    return couplePredictions
+      .map(
+        (prediction) =>
+          `${getContestantName(contestantsById, prediction.contestant_1_id)} + ${getContestantName(
+            contestantsById,
+            prediction.contestant_2_id
+          )}`
+      )
+      .join(" • ");
+  }
+
+  if (round.prediction_type === "elimination_prediction") {
+    const dumpedPick = predictions.find((prediction) => prediction.prediction_role === "dumped_pick");
+    const bottomGroupPick = predictions.find(
+      (prediction) => prediction.prediction_role === "bottom_group_pick"
+    );
+
+    return [
+      `Dumped: ${getContestantName(contestantsById, dumpedPick?.contestant_1_id)}`,
+      `Bottom group: ${getContestantName(
+        contestantsById,
+        bottomGroupPick?.contestant_1_id,
+        "No pick"
+      )}`,
+    ].join(" • ");
+  }
+
+  if (round.prediction_type === "bombshell_arrival_prediction") {
+    const bombshellIds = roundBombshellMap.get(round.id)?.length
+      ? roundBombshellMap.get(round.id) ?? []
+      : round.bombshell_contestant_id
+        ? [round.bombshell_contestant_id]
+        : [];
+
+    if (bombshellIds.length === 0) {
+      return "No bombshells set for this round.";
+    }
+
+    return bombshellIds
+      .map((bombshellId) => {
+        const prediction = predictions.find(
+          (row) =>
+            row.prediction_role === "target_pick" && row.bombshell_contestant_id === bombshellId
+        );
+
+        return `${getContestantName(contestantsById, bombshellId)} -> ${getContestantName(
+          contestantsById,
+          prediction?.contestant_1_id,
+          "No pick"
+        )}`;
+      })
+      .join(" • ");
+  }
+
+  return "No prediction required.";
+}
+
+function buildScoreBreakdown(
+  round: Round,
+  contestantsById: Map<string, string>,
+  predictions: PredictionRow[],
+  actualCouples: ActualCouple[],
+  roundResults: RoundResult[],
+  roundBombshellMap: Map<string, string[]>
+) {
+  if (isRecouplingPrediction(round.prediction_type)) {
+    const couplePredictions = predictions.filter(
+      (prediction) =>
+        (prediction.prediction_role === "couple_pick" || prediction.prediction_role == null) &&
+        prediction.contestant_1_id &&
+        prediction.contestant_2_id
+    );
+
+    if (couplePredictions.length === 0) {
+      return ["No couples saved for this round."];
+    }
+
+    if (!actualCouples.some((couple) => couple.round_id === round.id)) {
+      return ["Waiting for actual couples to be entered."];
+    }
+
+    return couplePredictions.map((prediction) => {
+      const formattedPair = `${getContestantName(
+        contestantsById,
+        prediction.contestant_1_id
+      )} + ${getContestantName(contestantsById, prediction.contestant_2_id)}`;
+
+      const roundActualCouples = actualCouples.filter((couple) => couple.round_id === round.id);
+      const exactMatch = roundActualCouples.some((actualCouple) =>
+        isExactCoupleMatch(
+          {
+            contestant_1_id: prediction.contestant_1_id as string,
+            contestant_2_id: prediction.contestant_2_id as string,
+          },
+          actualCouple
+        )
+      );
+
+      if (exactMatch) {
+        return `${formattedPair}: exact couple match (+5)`;
+      }
+
+      const partialMatch = roundActualCouples.some((actualCouple) =>
+        sharesOnePerson(
+          {
+            contestant_1_id: prediction.contestant_1_id as string,
+            contestant_2_id: prediction.contestant_2_id as string,
+          },
+          actualCouple
+        )
+      );
+
+      if (partialMatch) {
+        return `${formattedPair}: one correct person, wrong partner (+2)`;
+      }
+
+      return `${formattedPair}: no match (+0)`;
+    });
+  }
+
+  if (round.prediction_type === "elimination_prediction") {
+    const dumpedActual = roundResults.find(
+      (result) => result.round_id === round.id && result.result_type === "dumped_pick"
+    );
+    const bottomGroupActual = roundResults.find(
+      (result) => result.round_id === round.id && result.result_type === "bottom_group_pick"
+    );
+    const dumpedPrediction = predictions.find((prediction) => prediction.prediction_role === "dumped_pick");
+    const bottomGroupPrediction = predictions.find(
+      (prediction) => prediction.prediction_role === "bottom_group_pick"
+    );
+
+    if (!dumpedActual) {
+      return ["Waiting for actual elimination results to be entered."];
+    }
+
+    return [
+      dumpedPrediction
+        ? dumpedPrediction.contestant_1_id === dumpedActual.contestant_id
+          ? `Dumped pick (${getContestantName(contestantsById, dumpedPrediction.contestant_1_id)}): correct (+5)`
+          : `Dumped pick (${getContestantName(contestantsById, dumpedPrediction.contestant_1_id)}): incorrect (+0)`
+        : "No dumped pick saved (+0)",
+      bottomGroupPrediction
+        ? bottomGroupActual && bottomGroupPrediction.contestant_1_id === bottomGroupActual.contestant_id
+          ? `Bottom group pick (${getContestantName(contestantsById, bottomGroupPrediction.contestant_1_id)}): correct (+2)`
+          : `Bottom group pick (${getContestantName(contestantsById, bottomGroupPrediction.contestant_1_id)}): incorrect (+0)`
+        : "No bottom group pick saved (+0)",
+    ];
+  }
+
+  if (round.prediction_type === "bombshell_arrival_prediction") {
+    const bombshellIds = roundBombshellMap.get(round.id)?.length
+      ? roundBombshellMap.get(round.id) ?? []
+      : round.bombshell_contestant_id
+        ? [round.bombshell_contestant_id]
+        : [];
+
+    if (bombshellIds.length === 0) {
+      return ["No bombshells set for this round."];
+    }
+
+    return bombshellIds.map((bombshellId) => {
+      const bombshellName = getContestantName(contestantsById, bombshellId);
+      const prediction = predictions.find(
+        (row) =>
+          row.prediction_role === "target_pick" && row.bombshell_contestant_id === bombshellId
+      );
+      const actual = roundResults.find(
+        (result) =>
+          result.round_id === round.id &&
+          result.result_type === "target_pick" &&
+          result.bombshell_contestant_id === bombshellId
+      );
+
+      if (!actual) {
+        return `${bombshellName}: waiting for actual result`;
+      }
+
+      if (!prediction) {
+        return `${bombshellName}: no pick saved (+0)`;
+      }
+
+      return prediction.contestant_1_id === actual.contestant_id
+        ? `${bombshellName} -> ${getContestantName(contestantsById, prediction.contestant_1_id)}: correct (+5)`
+        : `${bombshellName} -> ${getContestantName(contestantsById, prediction.contestant_1_id)}: incorrect (+0)`;
+    });
+  }
+
+  return ["This round did not use a scored prediction flow."];
+}
+
 export default function LeaderboardPage() {
   const [currentUser, setCurrentUser] = useState<StoredLeagueUser | null>(null);
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
@@ -153,6 +389,7 @@ export default function LeaderboardPage() {
         { data: contestantData, error: contestantError },
         { data: actualCoupleData, error: actualCoupleError },
         { data: roundResultsData, error: roundResultsError },
+        { data: predictionData, error: predictionError },
       ] = await Promise.all([
         supabase
           .from("scores")
@@ -173,6 +410,14 @@ export default function LeaderboardPage() {
         supabase
           .from("round_results")
           .select("round_id, result_type, contestant_id, bombshell_contestant_id"),
+        storedUser
+          ? supabase
+              .from("predictions")
+              .select(
+                "user_id, round_id, prediction_role, bombshell_contestant_id, contestant_1_id, contestant_2_id"
+              )
+              .eq("user_id", storedUser.id)
+          : Promise.resolve({ data: [], error: null }),
       ]);
 
       if (
@@ -182,7 +427,8 @@ export default function LeaderboardPage() {
         roundBombshellError ||
         contestantError ||
         actualCoupleError ||
-        roundResultsError
+        roundResultsError ||
+        predictionError
       ) {
         setErrorMessage(
           scoreError?.message ??
@@ -192,6 +438,7 @@ export default function LeaderboardPage() {
             contestantError?.message ??
             actualCoupleError?.message ??
             roundResultsError?.message ??
+            predictionError?.message ??
             "Unable to load leaderboard."
         );
         setLoading(false);
@@ -234,20 +481,40 @@ export default function LeaderboardPage() {
         return map;
       }, new Map());
 
-      const nextRoundResultSummaries = ((roundData ?? []) as Round[]).map((round) => ({
-        roundId: round.id,
-        roundTitle: round.title,
-        predictionType: round.prediction_type,
-        status: round.status,
-        resultSummary: describeRoundResults(
-          round,
-          contestantsById,
-          (actualCoupleData ?? []) as ActualCouple[],
-          (roundResultsData ?? []) as RoundResult[],
-          roundBombshellMap
-        ),
-        playerPoints: pointsByRound.get(round.id) ?? 0,
-      }));
+      const nextRoundResultSummaries = ((roundData ?? []) as Round[]).map((round) => {
+        const roundPredictions = ((predictionData ?? []) as PredictionRow[]).filter(
+          (prediction) => prediction.round_id === round.id
+        );
+
+        return {
+          roundId: round.id,
+          roundTitle: round.title,
+          predictionType: round.prediction_type,
+          status: round.status,
+          resultSummary: describeRoundResults(
+            round,
+            contestantsById,
+            (actualCoupleData ?? []) as ActualCouple[],
+            (roundResultsData ?? []) as RoundResult[],
+            roundBombshellMap
+          ),
+          playerPredictionSummary: describePlayerPredictions(
+            round,
+            contestantsById,
+            roundPredictions,
+            roundBombshellMap
+          ),
+          scoreBreakdown: buildScoreBreakdown(
+            round,
+            contestantsById,
+            roundPredictions,
+            (actualCoupleData ?? []) as ActualCouple[],
+            (roundResultsData ?? []) as RoundResult[],
+            roundBombshellMap
+          ),
+          playerPoints: pointsByRound.get(round.id) ?? 0,
+        };
+      });
 
       setEntries(nextEntries);
       setRoundResultSummaries(nextRoundResultSummaries);
@@ -376,7 +643,38 @@ export default function LeaderboardPage() {
                         {summary.playerPoints} points for you
                       </div>
                     </div>
-                    <p className="mt-3 text-sm leading-7 text-zinc-300">{summary.resultSummary}</p>
+                    <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_1fr]">
+                      <div className="rounded-2xl border border-zinc-800 bg-black/30 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                          What you picked
+                        </p>
+                        <p className="mt-2 text-sm leading-7 text-zinc-200">
+                          {summary.playerPredictionSummary}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-zinc-800 bg-black/30 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                          Actual result
+                        </p>
+                        <p className="mt-2 text-sm leading-7 text-zinc-200">
+                          {summary.resultSummary}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 rounded-2xl border border-zinc-800 bg-black/30 p-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                        How your score was calculated
+                      </p>
+                      <div className="mt-3 space-y-2">
+                        {summary.scoreBreakdown.map((line) => (
+                          <p key={`${summary.roundId}-${line}`} className="text-sm leading-7 text-zinc-300">
+                            {line}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
                   </article>
                 ))}
               </div>
