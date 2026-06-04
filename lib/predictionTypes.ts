@@ -28,6 +28,13 @@ export const predictionTypeOptions = [
       "Use this when one or more bombshells arrive and players need to guess which islander each one targets first.",
   },
   {
+    value: "question_challenge_prediction",
+    label: "Question challenge round",
+    pointsAvailable: true,
+    description:
+      "Use this for episode-specific islander trivia or challenge questions. Each correctly answered question is worth 4 points.",
+  },
+  {
     value: "no_score_episode",
     label: "No-score episode",
     pointsAvailable: false,
@@ -80,4 +87,8 @@ export function isRecouplingPrediction(predictionType: string) {
 
 export function isNoScoreEpisode(predictionType: string) {
   return predictionType === "no_score_episode";
+}
+
+export function isQuestionChallengePrediction(predictionType: string) {
+  return predictionType === "question_challenge_prediction";
 }

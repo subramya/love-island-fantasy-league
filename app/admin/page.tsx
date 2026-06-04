@@ -11,6 +11,7 @@ import {
 import {
   getPredictionTypeDescription,
   getPredictionTypeLabel,
+  isQuestionChallengePrediction,
   isRecouplingPrediction,
   predictionTypeHasPoints,
   predictionTypeOptions,
@@ -39,6 +40,13 @@ type RoundBombshellRow = {
   bombshell_contestant_id: string;
 };
 
+type RoundQuestion = {
+  id: string;
+  round_id: string;
+  question_text: string;
+  question_order: number;
+};
+
 type LeagueMember = {
   id: string;
   name: string;
@@ -62,6 +70,7 @@ type CoupleFormRow = {
 
 type RoundResultRow = {
   bombshell_contestant_id?: string | null;
+  round_question_id?: string | null;
   result_type: string;
   contestant_id: string | null;
 };
@@ -86,6 +95,10 @@ function toggleContestantId(currentValue: string[], contestantId: string) {
   return currentValue.includes(contestantId)
     ? currentValue.filter((id) => id !== contestantId)
     : [...currentValue, contestantId];
+}
+
+function createEmptyQuestionPrompt() {
+  return "";
 }
 
 type BombshellSelectorGroupProps = {
@@ -139,9 +152,16 @@ export default function AdminPage() {
   const [roundTitle, setRoundTitle] = useState("");
   const [predictionType, setPredictionType] = useState("recoupling_prediction");
   const [selectedBombshellContestantIds, setSelectedBombshellContestantIds] = useState<string[]>([]);
+  const [questionPrompts, setQuestionPrompts] = useState<string[]>([
+    createEmptyQuestionPrompt(),
+    createEmptyQuestionPrompt(),
+  ]);
   const [roundBombshellSelections, setRoundBombshellSelections] = useState<Record<string, string[]>>(
     {}
   );
+  const [roundQuestionsByRoundId, setRoundQuestionsByRoundId] = useState<
+    Record<string, RoundQuestion[]>
+  >({});
   const [roundStatus, setRoundStatus] = useState("open");
   const [selectedActualRoundId, setSelectedActualRoundId] = useState("");
   const [scoringRoundId, setScoringRoundId] = useState("");
@@ -155,6 +175,9 @@ export default function AdminPage() {
   const [actualDumpedContestantId, setActualDumpedContestantId] = useState("");
   const [actualBottomGroupContestantId, setActualBottomGroupContestantId] = useState("");
   const [actualBombshellTargetIdsByBombshell, setActualBombshellTargetIdsByBombshell] = useState<
+    Record<string, string>
+  >({});
+  const [actualQuestionAnswerIdsByQuestion, setActualQuestionAnswerIdsByQuestion] = useState<
     Record<string, string>
   >({});
   const [notificationDraft, setNotificationDraft] = useState<NotificationDraft | null>(null);
@@ -180,6 +203,7 @@ export default function AdminPage() {
       { data: roundsData, error: roundsError },
       { data: leagueMembersData, error: leagueMembersError },
       { data: roundBombshellsData, error: roundBombshellsError },
+      { data: roundQuestionsData, error: roundQuestionsError },
     ] = await Promise.all([
       supabase
         .from("contestants")
@@ -196,14 +220,26 @@ export default function AdminPage() {
       supabase
         .from("round_bombshells")
         .select("round_id, bombshell_contestant_id"),
+      supabase
+        .from("round_questions")
+        .select("id, round_id, question_text, question_order")
+        .order("question_order")
+        .order("created_at"),
     ]);
 
-    if (contestantsError || roundsError || leagueMembersError || roundBombshellsError) {
+    if (
+      contestantsError ||
+      roundsError ||
+      leagueMembersError ||
+      roundBombshellsError ||
+      roundQuestionsError
+    ) {
       setErrorMessage(
         contestantsError?.message ??
           roundsError?.message ??
           leagueMembersError?.message ??
           roundBombshellsError?.message ??
+          roundQuestionsError?.message ??
           "Unable to load admin data."
       );
       setLoading(false);
@@ -216,6 +252,14 @@ export default function AdminPage() {
       Record<string, string[]>
     >((map, row) => {
       map[row.round_id] = [...(map[row.round_id] ?? []), row.bombshell_contestant_id];
+      return map;
+    }, {});
+    const nextRoundQuestionsByRoundId = ((roundQuestionsData ?? []) as RoundQuestion[]).reduce<
+      Record<string, RoundQuestion[]>
+    >((map, row) => {
+      map[row.round_id] = [...(map[row.round_id] ?? []), row].sort(
+        (left, right) => left.question_order - right.question_order
+      );
       return map;
     }, {});
 
@@ -232,6 +276,7 @@ export default function AdminPage() {
         return map;
       }, {})
     );
+    setRoundQuestionsByRoundId(nextRoundQuestionsByRoundId);
     setLeagueMembers((leagueMembersData ?? []) as LeagueMember[]);
     setContestantStatuses(
       nextContestants.reduce<Record<string, string>>((map, contestant) => {
@@ -263,6 +308,7 @@ export default function AdminPage() {
         setActualDumpedContestantId("");
         setActualBottomGroupContestantId("");
         setActualBombshellTargetIdsByBombshell({});
+        setActualQuestionAnswerIdsByQuestion({});
         return;
       }
 
@@ -300,16 +346,18 @@ export default function AdminPage() {
         setActualDumpedContestantId("");
         setActualBottomGroupContestantId("");
         setActualBombshellTargetIdsByBombshell({});
+        setActualQuestionAnswerIdsByQuestion({});
         return;
       }
 
       if (
         selectedActualRound.prediction_type === "elimination_prediction" ||
-        selectedActualRound.prediction_type === "bombshell_arrival_prediction"
+        selectedActualRound.prediction_type === "bombshell_arrival_prediction" ||
+        isQuestionChallengePrediction(selectedActualRound.prediction_type)
       ) {
         const { data, error } = await supabase
           .from("round_results")
-          .select("result_type, contestant_id, bombshell_contestant_id")
+          .select("result_type, contestant_id, bombshell_contestant_id, round_question_id")
           .eq("round_id", selectedActualRound.id);
 
         if (error) {
@@ -339,6 +387,18 @@ export default function AdminPage() {
             return map;
           }, {})
         );
+        setActualQuestionAnswerIdsByQuestion(
+          typedResults.reduce<Record<string, string>>((map, result) => {
+            if (
+              result.result_type === "question_pick" &&
+              result.round_question_id &&
+              result.contestant_id
+            ) {
+              map[result.round_question_id] = result.contestant_id;
+            }
+            return map;
+          }, {})
+        );
         return;
       }
 
@@ -347,6 +407,7 @@ export default function AdminPage() {
       setActualDumpedContestantId("");
       setActualBottomGroupContestantId("");
       setActualBombshellTargetIdsByBombshell({});
+      setActualQuestionAnswerIdsByQuestion({});
     };
 
     void loadSelectedRoundResults();
@@ -483,6 +544,16 @@ export default function AdminPage() {
       return;
     }
 
+    const trimmedQuestionPrompts = questionPrompts
+      .map((prompt) => prompt.trim())
+      .filter((prompt) => prompt !== "");
+
+    if (isQuestionChallengePrediction(predictionType) && trimmedQuestionPrompts.length === 0) {
+      setErrorMessage("Add at least one question for the question challenge round.");
+      setSuccessMessage("");
+      return;
+    }
+
     setErrorMessage("");
     setSuccessMessage("");
 
@@ -519,9 +590,25 @@ export default function AdminPage() {
       }
     }
 
+    if (isQuestionChallengePrediction(predictionType) && insertedRound) {
+      const { error: insertQuestionsError } = await supabase.from("round_questions").insert(
+        trimmedQuestionPrompts.map((questionText, index) => ({
+          round_id: insertedRound.id,
+          question_text: questionText,
+          question_order: index + 1,
+        }))
+      );
+
+      if (insertQuestionsError) {
+        setErrorMessage(insertQuestionsError.message);
+        return;
+      }
+    }
+
     setRoundTitle("");
     setPredictionType("recoupling_prediction");
     setSelectedBombshellContestantIds([]);
+    setQuestionPrompts([createEmptyQuestionPrompt(), createEmptyQuestionPrompt()]);
     setRoundStatus("open");
     setSuccessMessage("Round created.");
     await loadAdminData();
@@ -781,6 +868,57 @@ export default function AdminPage() {
     }
 
     setSuccessMessage("Bombshell results saved.");
+    setErrorMessage("");
+  };
+
+  const saveQuestionChallengeResults = async () => {
+    if (!selectedActualRoundId || !selectedActualRound) {
+      setErrorMessage("Select a round before saving question challenge results.");
+      setSuccessMessage("");
+      return;
+    }
+
+    const roundQuestions = roundQuestionsByRoundId[selectedActualRound.id] ?? [];
+
+    if (roundQuestions.length === 0) {
+      setErrorMessage("Add the round questions first before saving actual answers.");
+      setSuccessMessage("");
+      return;
+    }
+
+    if (roundQuestions.some((question) => !actualQuestionAnswerIdsByQuestion[question.id])) {
+      setErrorMessage("Choose the correct islander answer for each question.");
+      setSuccessMessage("");
+      return;
+    }
+
+    const { error: deleteError } = await supabase
+      .from("round_results")
+      .delete()
+      .eq("round_id", selectedActualRoundId);
+
+    if (deleteError) {
+      setErrorMessage(deleteError.message);
+      setSuccessMessage("");
+      return;
+    }
+
+    const { error: insertError } = await supabase.from("round_results").insert(
+      roundQuestions.map((question) => ({
+        round_id: selectedActualRoundId,
+        result_type: "question_pick",
+        round_question_id: question.id,
+        contestant_id: actualQuestionAnswerIdsByQuestion[question.id],
+      }))
+    );
+
+    if (insertError) {
+      setErrorMessage(insertError.message);
+      setSuccessMessage("");
+      return;
+    }
+
+    setSuccessMessage("Question challenge answers saved.");
     setErrorMessage("");
   };
 
@@ -1406,6 +1544,12 @@ export default function AdminPage() {
                     if (nextPredictionType !== "bombshell_arrival_prediction") {
                       setSelectedBombshellContestantIds([]);
                     }
+                    if (
+                      isQuestionChallengePrediction(nextPredictionType) &&
+                      questionPrompts.every((prompt) => prompt.trim() === "")
+                    ) {
+                      setQuestionPrompts([createEmptyQuestionPrompt(), createEmptyQuestionPrompt()]);
+                    }
                   }}
                   className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition focus:border-pink-400"
                 >
@@ -1432,6 +1576,68 @@ export default function AdminPage() {
                     Pick one or more bombshells. Players will get one target question per bombshell.
                   </span>
                 </label>
+              ) : null}
+              {isQuestionChallengePrediction(predictionType) ? (
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium text-zinc-300">
+                      Question prompts
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setQuestionPrompts((currentValue) => [
+                          ...currentValue,
+                          createEmptyQuestionPrompt(),
+                        ])
+                      }
+                      className="rounded-full border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-100 transition hover:border-sky-300 hover:bg-sky-500/20"
+                    >
+                      Add question
+                    </button>
+                  </div>
+                  {questionPrompts.map((prompt, index) => (
+                    <div
+                      key={`question-prompt-${index + 1}`}
+                      className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4"
+                    >
+                      <div className="mb-3 flex items-center justify-between">
+                        <p className="text-sm font-semibold text-zinc-200">
+                          Question {index + 1}
+                        </p>
+                        {questionPrompts.length > 1 ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setQuestionPrompts((currentValue) =>
+                                currentValue.filter((_, currentIndex) => currentIndex !== index)
+                              )
+                            }
+                            className="text-sm font-medium text-zinc-500 transition hover:text-zinc-300"
+                          >
+                            Remove
+                          </button>
+                        ) : null}
+                      </div>
+                      <textarea
+                        value={prompt}
+                        onChange={(event) =>
+                          setQuestionPrompts((currentValue) =>
+                            currentValue.map((currentPrompt, currentIndex) =>
+                              currentIndex === index ? event.target.value : currentPrompt
+                            )
+                          )
+                        }
+                        rows={3}
+                        placeholder="Which islander...?"
+                        className="w-full rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-sky-400"
+                      />
+                    </div>
+                  ))}
+                  <p className="text-xs text-zinc-500">
+                    Players will answer each question by choosing one islander. Every correct answer is worth 4 points.
+                  </p>
+                </div>
               ) : null}
               <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-300">
                 <p>
@@ -1736,10 +1942,55 @@ export default function AdminPage() {
               </div>
             ) : null}
 
+            {isQuestionChallengePrediction(selectedActualRound?.prediction_type ?? "") ? (
+              <div className="mt-4 space-y-4 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+                {(roundQuestionsByRoundId[selectedActualRoundId] ?? []).length > 0 ? (
+                  (roundQuestionsByRoundId[selectedActualRoundId] ?? []).map((question, index) => (
+                    <label
+                      key={question.id}
+                      className="flex flex-col gap-2 text-sm font-medium text-zinc-300"
+                    >
+                      Question {index + 1}: {question.question_text}
+                      <select
+                        value={actualQuestionAnswerIdsByQuestion[question.id] ?? ""}
+                        onChange={(event) =>
+                          setActualQuestionAnswerIdsByQuestion((currentValue) => ({
+                            ...currentValue,
+                            [question.id]: event.target.value,
+                          }))
+                        }
+                        className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
+                      >
+                        <option value="">Select the correct islander</option>
+                        {contestants.map((contestant) => (
+                          <option key={contestant.id} value={contestant.id}>
+                            {contestant.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))
+                ) : (
+                  <p className="text-sm text-zinc-400">
+                    No question prompts were saved for this round yet.
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={saveQuestionChallengeResults}
+                  disabled={(roundQuestionsByRoundId[selectedActualRoundId] ?? []).length === 0}
+                  className="rounded-full bg-sky-400 px-5 py-3 text-sm font-semibold text-black transition hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-sky-200"
+                >
+                  Save question challenge answers
+                </button>
+              </div>
+            ) : null}
+
             {selectedActualRound &&
             !isRecouplingPrediction(selectedActualRound.prediction_type) &&
             selectedActualRound.prediction_type !== "elimination_prediction" &&
-            selectedActualRound.prediction_type !== "bombshell_arrival_prediction" ? (
+            selectedActualRound.prediction_type !== "bombshell_arrival_prediction" &&
+            !isQuestionChallengePrediction(selectedActualRound.prediction_type) ? (
               <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
                 This round type does not use an actual-results form right now.
               </div>
@@ -1749,7 +2000,7 @@ export default function AdminPage() {
           <div className="rounded-[2rem] border border-sky-400/20 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
             <h2 className="text-xl font-semibold">Run scoring</h2>
             <p className="mt-2 text-sm text-zinc-400">
-              Initial coupling, recoupling, elimination, and bombshell rounds can all be scored here once results are saved.
+              Initial coupling, recoupling, elimination, bombshell, and question challenge rounds can all be scored here once results are saved.
             </p>
             <label className="mt-4 flex flex-col gap-2 text-sm font-medium text-zinc-300">
               Round
@@ -1811,6 +2062,21 @@ export default function AdminPage() {
                       <p className="mt-2 text-sm text-zinc-500">
                         {getPredictionTypeDescription(round.prediction_type)}
                       </p>
+                      {isQuestionChallengePrediction(round.prediction_type) &&
+                      (roundQuestionsByRoundId[round.id] ?? []).length > 0 ? (
+                        <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                            Questions
+                          </p>
+                          <div className="mt-3 space-y-2 text-sm text-zinc-300">
+                            {(roundQuestionsByRoundId[round.id] ?? []).map((question, index) => (
+                              <p key={question.id}>
+                                {index + 1}. {question.question_text}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                       {round.prediction_type === "bombshell_arrival_prediction" ? (
                         <div className="mt-4 flex flex-col gap-2 sm:max-w-sm">
                           <label className="text-sm font-medium text-zinc-300">

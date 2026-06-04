@@ -8,6 +8,7 @@ import {
   getPredictionTypeDescription,
   getPredictionTypeLabel,
   isNoScoreEpisode,
+  isQuestionChallengePrediction,
   isRecouplingPrediction,
 } from "@/lib/predictionTypes";
 import { supabase } from "@/lib/supabaseClient";
@@ -32,6 +33,13 @@ type RoundBombshellRow = {
   bombshell_contestant_id: string;
 };
 
+type RoundQuestion = {
+  id: string;
+  round_id: string;
+  question_text: string;
+  question_order: number;
+};
+
 type PredictionFormRow = {
   rowId: number;
   contestant1Id: string;
@@ -44,6 +52,7 @@ type StoredPrediction = {
   contestant_1_id: string | null;
   contestant_2_id: string | null;
   prediction_role: string | null;
+  round_question_id?: string | null;
 };
 
 function createEmptyRow(rowId: number): PredictionFormRow {
@@ -89,7 +98,8 @@ function formatSavedPredictionSummary(
   round: Round | null,
   contestants: Contestant[],
   predictions: StoredPrediction[],
-  roundBombshellMap: Record<string, string[]>
+  roundBombshellMap: Record<string, string[]>,
+  roundQuestionsMap: Record<string, RoundQuestion[]>
 ) {
   if (!round || predictions.length === 0) {
     return "No saved predictions yet for this round.";
@@ -144,6 +154,28 @@ function formatSavedPredictionSummary(
         return `${getContestantName(contestants, bombshellId)} -> ${getContestantName(
           contestants,
           targetPrediction?.contestant_1_id ?? ""
+        )}`;
+      })
+      .join(" • ");
+  }
+
+  if (isQuestionChallengePrediction(round.prediction_type)) {
+    const roundQuestions = roundQuestionsMap[round.id] ?? [];
+
+    if (roundQuestions.length === 0) {
+      return "No questions have been set up for this round yet.";
+    }
+
+    return roundQuestions
+      .map((question, index) => {
+        const prediction = predictions.find(
+          (row) =>
+            row.prediction_role === "question_pick" && row.round_question_id === question.id
+        );
+
+        return `Q${index + 1}: ${getContestantName(
+          contestants,
+          prediction?.contestant_1_id ?? ""
         )}`;
       })
       .join(" • ");
@@ -305,6 +337,10 @@ export default function PredictPage() {
   const [savedPredictions, setSavedPredictions] = useState<StoredPrediction[]>([]);
   const [savedPredictionUpdatedAt, setSavedPredictionUpdatedAt] = useState<string | null>(null);
   const [roundBombshellMap, setRoundBombshellMap] = useState<Record<string, string[]>>({});
+  const [roundQuestionsMap, setRoundQuestionsMap] = useState<Record<string, RoundQuestion[]>>({});
+  const [questionPickIdsByQuestion, setQuestionPickIdsByQuestion] = useState<Record<string, string>>(
+    {}
+  );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -316,6 +352,7 @@ export default function PredictPage() {
     openRound?.prediction_type === "bombshell_arrival_prediction" ? contestants : activeContestants;
   const isInitialCouplingRound = openRound?.prediction_type === "initial_coupling_prediction";
   const selectedBombshellIds = getBombshellIdsForRound(openRound, roundBombshellMap);
+  const selectedRoundQuestions = openRound ? roundQuestionsMap[openRound.id] ?? [] : [];
 
   useEffect(() => {
     const loadPredictionPage = async () => {
@@ -336,6 +373,7 @@ export default function PredictPage() {
         { data: contestantsData, error: contestantsError },
         { data: roundsData, error: roundError },
         { data: roundBombshellsData, error: roundBombshellsError },
+        { data: roundQuestionsData, error: roundQuestionsError },
       ] = await Promise.all([
         supabase
           .from("contestants")
@@ -350,13 +388,19 @@ export default function PredictPage() {
         supabase
           .from("round_bombshells")
           .select("round_id, bombshell_contestant_id"),
+        supabase
+          .from("round_questions")
+          .select("id, round_id, question_text, question_order")
+          .order("question_order")
+          .order("created_at"),
       ]);
 
-      if (contestantsError || roundError || roundBombshellsError) {
+      if (contestantsError || roundError || roundBombshellsError || roundQuestionsError) {
         setErrorMessage(
           contestantsError?.message ??
             roundError?.message ??
             roundBombshellsError?.message ??
+            roundQuestionsError?.message ??
             "Unable to load predictions."
         );
         setLoading(false);
@@ -371,7 +415,16 @@ export default function PredictPage() {
         map[row.round_id] = [...(map[row.round_id] ?? []), row.bombshell_contestant_id];
         return map;
       }, {});
+      const nextRoundQuestionsMap = ((roundQuestionsData ?? []) as RoundQuestion[]).reduce<
+        Record<string, RoundQuestion[]>
+      >((map, row) => {
+        map[row.round_id] = [...(map[row.round_id] ?? []), row].sort(
+          (left, right) => left.question_order - right.question_order
+        );
+        return map;
+      }, {});
       setRoundBombshellMap(nextRoundBombshellMap);
+      setRoundQuestionsMap(nextRoundQuestionsMap);
       setOpenRounds(nextRounds);
       setSelectedRoundId((currentValue) => {
         if (currentValue && nextRounds.some((round) => round.id === currentValue)) {
@@ -394,13 +447,14 @@ export default function PredictPage() {
         setNextRowId(2);
         setSavedPredictions([]);
         setSavedPredictionUpdatedAt(null);
+        setQuestionPickIdsByQuestion({});
         return;
       }
 
       const { data: existingPredictions, error: predictionsError } = await supabase
         .from("predictions")
         .select(
-          "contestant_1_id, contestant_2_id, prediction_role, bombshell_contestant_id, created_at"
+          "contestant_1_id, contestant_2_id, prediction_role, bombshell_contestant_id, round_question_id, created_at"
         )
         .eq("round_id", selectedRoundId)
         .eq("user_id", user.id)
@@ -422,6 +476,7 @@ export default function PredictPage() {
       setDumpedPickId("");
       setBottomGroupPickId("");
       setTargetPickIdsByBombshell({});
+      setQuestionPickIdsByQuestion({});
 
       if (openRound && isRecouplingPrediction(openRound.prediction_type)) {
         const couplePredictions = typedPredictions.filter(
@@ -479,12 +534,30 @@ export default function PredictPage() {
         return;
       }
 
+      if (isQuestionChallengePrediction(openRound?.prediction_type ?? "")) {
+        setRows([createEmptyRow(1)]);
+        setNextRowId(2);
+        setQuestionPickIdsByQuestion(
+          typedPredictions.reduce<Record<string, string>>((map, prediction) => {
+            if (
+              prediction.prediction_role === "question_pick" &&
+              prediction.round_question_id &&
+              prediction.contestant_1_id
+            ) {
+              map[prediction.round_question_id] = prediction.contestant_1_id;
+            }
+            return map;
+          }, {})
+        );
+        return;
+      }
+
       setRows([createEmptyRow(1)]);
       setNextRowId(2);
     };
 
     void loadExistingPredictions();
-  }, [selectedRoundId, user]);
+  }, [selectedRoundId, user, openRound?.prediction_type]);
 
   const updateRow = (
     rowId: number,
@@ -553,7 +626,9 @@ export default function PredictPage() {
           user_id: string;
           round_id: string;
           prediction_role: string;
+          round_question_id?: string | null;
           contestant_1_id: string;
+          bombshell_contestant_id?: string | null;
           contestant_2_id?: string | null;
         }>
       | null = null;
@@ -646,6 +721,28 @@ export default function PredictPage() {
         prediction_role: "target_pick",
         bombshell_contestant_id: bombshellId,
         contestant_1_id: targetPickIdsByBombshell[bombshellId],
+      }));
+    }
+
+    if (isQuestionChallengePrediction(openRound.prediction_type)) {
+      if (selectedRoundQuestions.length === 0) {
+        setErrorMessage("Admin still needs to add the questions for this round.");
+        setSaving(false);
+        return;
+      }
+
+      if (selectedRoundQuestions.some((question) => !questionPickIdsByQuestion[question.id])) {
+        setErrorMessage("Answer every question before saving.");
+        setSaving(false);
+        return;
+      }
+
+      predictionRows = selectedRoundQuestions.map((question) => ({
+        user_id: user.id,
+        round_id: openRound.id,
+        prediction_role: "question_pick",
+        round_question_id: question.id,
+        contestant_1_id: questionPickIdsByQuestion[question.id],
       }));
     }
 
@@ -785,7 +882,8 @@ export default function PredictPage() {
                       openRound,
                       contestants,
                       savedPredictions,
-                      roundBombshellMap
+                      roundBombshellMap,
+                      roundQuestionsMap
                     )}
                   </p>
                   <p className="mt-2 text-xs text-emerald-200/75">
@@ -951,6 +1049,44 @@ export default function PredictPage() {
                     />
                   ))}
                 </div>
+              ) : isQuestionChallengePrediction(openRound?.prediction_type ?? "") ? (
+                <div className="mt-6 space-y-4">
+                  <div className="rounded-2xl border border-yellow-500/25 bg-yellow-500/8 p-4 text-sm text-yellow-100">
+                    <div className="space-y-2">
+                      {selectedRoundQuestions.map((question, index) => (
+                        <p key={question.id}>
+                          <span className="font-semibold">Q{index + 1}:</span> {question.question_text}
+                          <br />
+                          <span className="font-semibold">Your pick:</span>{" "}
+                          {getContestantName(
+                            contestants,
+                            questionPickIdsByQuestion[question.id] ?? ""
+                          )}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                  {selectedRoundQuestions.length === 0 ? (
+                    <div className="rounded-2xl border border-red-500/30 bg-red-950/40 p-4 text-sm text-red-200">
+                      Admin still needs to add the questions for this round before players can answer.
+                    </div>
+                  ) : null}
+                  {selectedRoundQuestions.map((question, index) => (
+                    <ContestantPicker
+                      key={question.id}
+                      contestants={contestants}
+                      label={`Question ${index + 1}`}
+                      helperText={question.question_text}
+                      selectedId={questionPickIdsByQuestion[question.id] ?? ""}
+                      onSelect={(contestantId) =>
+                        setQuestionPickIdsByQuestion((currentValue) => ({
+                          ...currentValue,
+                          [question.id]: contestantId,
+                        }))
+                      }
+                    />
+                  ))}
+                </div>
               ) : (
                 <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-5 text-sm text-zinc-300">
                   {openRound && isNoScoreEpisode(openRound.prediction_type)
@@ -970,7 +1106,9 @@ export default function PredictPage() {
                     !openRound ||
                     isNoScoreEpisode(openRound.prediction_type) ||
                     (openRound.prediction_type === "bombshell_arrival_prediction" &&
-                      selectedBombshellIds.length === 0)
+                      selectedBombshellIds.length === 0) ||
+                    (isQuestionChallengePrediction(openRound?.prediction_type ?? "") &&
+                      selectedRoundQuestions.length === 0)
                   }
                   className="rounded-full bg-pink-500 px-5 py-3 text-sm font-semibold text-black transition hover:bg-pink-400 disabled:cursor-not-allowed disabled:bg-pink-300"
                 >

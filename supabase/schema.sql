@@ -26,6 +26,14 @@ create table if not exists round_bombshells (
   created_at timestamp default now()
 );
 
+create table if not exists round_questions (
+  id uuid primary key default gen_random_uuid(),
+  round_id uuid references rounds(id),
+  question_text text not null,
+  question_order int default 0,
+  created_at timestamp default now()
+);
+
 create table if not exists league_users (
   id uuid primary key default gen_random_uuid(),
   name text not null unique,
@@ -38,6 +46,7 @@ create table if not exists predictions (
   user_id uuid references league_users(id),
   round_id uuid references rounds(id),
   prediction_role text,
+  round_question_id uuid references round_questions(id),
   bombshell_contestant_id uuid references contestants(id),
   contestant_1_id uuid references contestants(id),
   contestant_2_id uuid references contestants(id),
@@ -56,6 +65,7 @@ create table if not exists round_results (
   id uuid primary key default gen_random_uuid(),
   round_id uuid references rounds(id),
   result_type text not null,
+  round_question_id uuid references round_questions(id),
   bombshell_contestant_id uuid references contestants(id),
   contestant_id uuid references contestants(id),
   created_at timestamp default now()

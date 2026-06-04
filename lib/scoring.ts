@@ -1,5 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { isRecouplingPrediction } from "@/lib/predictionTypes";
+import {
+  isQuestionChallengePrediction,
+  isRecouplingPrediction,
+} from "@/lib/predictionTypes";
 
 type CoupleRow = {
   contestant_1_id: string;
@@ -11,11 +14,13 @@ type PredictionRow = {
   contestant_1_id: string;
   contestant_2_id?: string | null;
   prediction_role?: string | null;
+  round_question_id?: string | null;
   user_id: string;
 };
 
 type RoundResultRow = {
   bombshell_contestant_id?: string | null;
+  round_question_id?: string | null;
   result_type: string;
   contestant_id: string | null;
 };
@@ -152,6 +157,36 @@ export function calculateBombshellScores(
   return Array.from(totals.entries()).map(([user_id, points]) => ({ user_id, points }));
 }
 
+export function calculateQuestionChallengeScores(
+  predictions: PredictionRow[],
+  roundResults: RoundResultRow[]
+) {
+  const totals = new Map<string, number>();
+  const resultsByQuestion = new Map<string, string>();
+
+  roundResults.forEach((result) => {
+    if (
+      result.result_type === "question_pick" &&
+      result.round_question_id &&
+      result.contestant_id
+    ) {
+      resultsByQuestion.set(result.round_question_id, result.contestant_id);
+    }
+  });
+
+  for (const prediction of predictions) {
+    if (
+      prediction.prediction_role === "question_pick" &&
+      prediction.round_question_id &&
+      prediction.contestant_1_id === resultsByQuestion.get(prediction.round_question_id)
+    ) {
+      addPoints(totals, prediction.user_id, 4);
+    }
+  }
+
+  return Array.from(totals.entries()).map(([user_id, points]) => ({ user_id, points }));
+}
+
 export async function runRoundScoring(supabase: SupabaseClient, roundId: string) {
   const { data: roundData, error: roundError } = await supabase
     .from("rounds")
@@ -268,6 +303,39 @@ export async function runRoundScoring(supabase: SupabaseClient, roundId: string)
     }
 
     scoreRows = calculateBombshellScores(
+      (predictions ?? []) as PredictionRow[],
+      (roundResults ?? []) as RoundResultRow[]
+    );
+  } else if (isQuestionChallengePrediction(predictionType)) {
+    const [
+      { data: predictions, error: predictionsError },
+      { data: roundResults, error: roundResultsError },
+    ] = await Promise.all([
+      supabase
+        .from("predictions")
+        .select(
+          "user_id, contestant_1_id, prediction_role, bombshell_contestant_id, round_question_id"
+        )
+        .eq("round_id", roundId),
+      supabase
+        .from("round_results")
+        .select("result_type, contestant_id, bombshell_contestant_id, round_question_id")
+        .eq("round_id", roundId),
+    ]);
+
+    if (predictionsError) {
+      throw new Error(predictionsError.message);
+    }
+
+    if (roundResultsError) {
+      throw new Error(roundResultsError.message);
+    }
+
+    if (!(roundResults ?? []).some((result) => result.result_type === "question_pick")) {
+      throw new Error("Add the actual question answers before running scoring.");
+    }
+
+    scoreRows = calculateQuestionChallengeScores(
       (predictions ?? []) as PredictionRow[],
       (roundResults ?? []) as RoundResultRow[]
     );
