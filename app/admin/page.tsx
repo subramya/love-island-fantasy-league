@@ -47,6 +47,13 @@ type RoundQuestion = {
   question_order: number;
 };
 
+type RoundTrackerEntry = {
+  round_id: string;
+  contestant_id: string;
+  tracker_state: string;
+  partner_contestant_id: string | null;
+};
+
 type LeagueMember = {
   id: string;
   name: string;
@@ -162,8 +169,18 @@ export default function AdminPage() {
   const [roundQuestionsByRoundId, setRoundQuestionsByRoundId] = useState<
     Record<string, RoundQuestion[]>
   >({});
+  const [roundTrackerEntriesByRoundId, setRoundTrackerEntriesByRoundId] = useState<
+    Record<string, RoundTrackerEntry[]>
+  >({});
   const [roundStatus, setRoundStatus] = useState("open");
   const [selectedActualRoundId, setSelectedActualRoundId] = useState("");
+  const [selectedTrackerRoundId, setSelectedTrackerRoundId] = useState("");
+  const [trackerStatesByContestantId, setTrackerStatesByContestantId] = useState<
+    Record<string, string>
+  >({});
+  const [trackerPartnersByContestantId, setTrackerPartnersByContestantId] = useState<
+    Record<string, string>
+  >({});
   const [scoringRoundId, setScoringRoundId] = useState("");
   const [leaderboardRoundId, setLeaderboardRoundId] = useState("");
   const [softwareUpdateTitle, setSoftwareUpdateTitle] = useState("");
@@ -186,6 +203,8 @@ export default function AdminPage() {
   const activeContestants = contestants.filter((contestant) => contestant.status === "active");
   const selectedActualRound =
     rounds.find((round) => round.id === selectedActualRoundId) ?? null;
+  const selectedTrackerRound =
+    rounds.find((round) => round.id === selectedTrackerRoundId) ?? null;
   const selectedActualRoundBombshellIds = selectedActualRound
     ? roundBombshellSelections[selectedActualRound.id]?.length
       ? roundBombshellSelections[selectedActualRound.id]
@@ -204,6 +223,7 @@ export default function AdminPage() {
       { data: leagueMembersData, error: leagueMembersError },
       { data: roundBombshellsData, error: roundBombshellsError },
       { data: roundQuestionsData, error: roundQuestionsError },
+      { data: roundTrackerEntriesData, error: roundTrackerEntriesError },
     ] = await Promise.all([
       supabase
         .from("contestants")
@@ -225,6 +245,9 @@ export default function AdminPage() {
         .select("id, round_id, question_text, question_order")
         .order("question_order")
         .order("created_at"),
+      supabase
+        .from("round_tracker_entries")
+        .select("round_id, contestant_id, tracker_state, partner_contestant_id"),
     ]);
 
     if (
@@ -232,7 +255,8 @@ export default function AdminPage() {
       roundsError ||
       leagueMembersError ||
       roundBombshellsError ||
-      roundQuestionsError
+      roundQuestionsError ||
+      roundTrackerEntriesError
     ) {
       setErrorMessage(
         contestantsError?.message ??
@@ -240,6 +264,7 @@ export default function AdminPage() {
           leagueMembersError?.message ??
           roundBombshellsError?.message ??
           roundQuestionsError?.message ??
+          roundTrackerEntriesError?.message ??
           "Unable to load admin data."
       );
       setLoading(false);
@@ -262,6 +287,12 @@ export default function AdminPage() {
       );
       return map;
     }, {});
+    const nextRoundTrackerEntriesByRoundId = (
+      (roundTrackerEntriesData ?? []) as RoundTrackerEntry[]
+    ).reduce<Record<string, RoundTrackerEntry[]>>((map, row) => {
+      map[row.round_id] = [...(map[row.round_id] ?? []), row];
+      return map;
+    }, {});
 
     setContestants(nextContestants);
     setRounds(nextRounds);
@@ -277,6 +308,7 @@ export default function AdminPage() {
       }, {})
     );
     setRoundQuestionsByRoundId(nextRoundQuestionsByRoundId);
+    setRoundTrackerEntriesByRoundId(nextRoundTrackerEntriesByRoundId);
     setLeagueMembers((leagueMembersData ?? []) as LeagueMember[]);
     setContestantStatuses(
       nextContestants.reduce<Record<string, string>>((map, contestant) => {
@@ -291,6 +323,7 @@ export default function AdminPage() {
       }, {})
     );
     setSelectedActualRoundId((currentValue) => currentValue || nextRounds[0]?.id || "");
+    setSelectedTrackerRoundId((currentValue) => currentValue || nextRounds[0]?.id || "");
     setScoringRoundId((currentValue) => currentValue || nextRounds[0]?.id || "");
     setLeaderboardRoundId((currentValue) => currentValue || nextRounds[0]?.id || "");
     setLoading(false);
@@ -412,6 +445,29 @@ export default function AdminPage() {
 
     void loadSelectedRoundResults();
   }, [isUnlocked, selectedActualRoundId, selectedActualRound?.prediction_type]);
+
+  useEffect(() => {
+    if (!isUnlocked || !selectedTrackerRound) {
+      setTrackerStatesByContestantId({});
+      setTrackerPartnersByContestantId({});
+      return;
+    }
+
+    const existingEntries = roundTrackerEntriesByRoundId[selectedTrackerRound.id] ?? [];
+    const nextStates = contestants.reduce<Record<string, string>>((map, contestant) => {
+      const existingEntry = existingEntries.find((entry) => entry.contestant_id === contestant.id);
+      map[contestant.id] = existingEntry?.tracker_state ?? "";
+      return map;
+    }, {});
+    const nextPartners = contestants.reduce<Record<string, string>>((map, contestant) => {
+      const existingEntry = existingEntries.find((entry) => entry.contestant_id === contestant.id);
+      map[contestant.id] = existingEntry?.partner_contestant_id ?? "";
+      return map;
+    }, {});
+
+    setTrackerStatesByContestantId(nextStates);
+    setTrackerPartnersByContestantId(nextPartners);
+  }, [isUnlocked, selectedTrackerRoundId, selectedTrackerRound, contestants, roundTrackerEntriesByRoundId]);
 
   const handleAdminUnlock = () => {
     setErrorMessage("");
@@ -949,6 +1005,75 @@ export default function AdminPage() {
       setErrorMessage(
         error instanceof Error ? error.message : "Unable to score the selected round."
       );
+    }
+  };
+
+  const saveTrackerEntries = async () => {
+    if (!selectedTrackerRoundId) {
+      setErrorMessage("Select a round before saving villa tracker entries.");
+      setSuccessMessage("");
+      return;
+    }
+
+    const entriesToSave = contestants
+      .map((contestant) => {
+        const trackerState = trackerStatesByContestantId[contestant.id];
+        const partnerContestantId = trackerPartnersByContestantId[contestant.id] || null;
+
+        if (!trackerState) {
+          return null;
+        }
+
+        if (trackerState === "coupled" && !partnerContestantId) {
+          throw new Error(`Choose a partner for ${contestant.name} before saving.`);
+        }
+
+        if (trackerState === "coupled" && partnerContestantId === contestant.id) {
+          throw new Error(`${contestant.name} cannot be paired with themselves.`);
+        }
+
+        return {
+          round_id: selectedTrackerRoundId,
+          contestant_id: contestant.id,
+          tracker_state: trackerState,
+          partner_contestant_id: trackerState === "coupled" ? partnerContestantId : null,
+        };
+      })
+      .filter(Boolean) as Array<{
+      round_id: string;
+      contestant_id: string;
+      tracker_state: string;
+      partner_contestant_id: string | null;
+    }>;
+
+    try {
+      const { error: deleteError } = await supabase
+        .from("round_tracker_entries")
+        .delete()
+        .eq("round_id", selectedTrackerRoundId);
+
+      if (deleteError) {
+        throw new Error(deleteError.message);
+      }
+
+      if (entriesToSave.length > 0) {
+        const { error: insertError } = await supabase
+          .from("round_tracker_entries")
+          .insert(entriesToSave);
+
+        if (insertError) {
+          throw new Error(insertError.message);
+        }
+      }
+
+      setSuccessMessage("Villa tracker saved for that round.");
+      setErrorMessage("");
+      await loadAdminData();
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Unable to save villa tracker entries."
+      );
+      setSuccessMessage("");
     }
   };
 
@@ -1756,6 +1881,116 @@ export default function AdminPage() {
             </div>
           ) : (
             <p className="mt-4 text-zinc-400">No contestants added yet.</p>
+          )}
+        </section>
+
+        <section className="rounded-[2rem] border border-emerald-400/20 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Villa tracker by round</h2>
+              <p className="mt-2 text-sm text-zinc-400">
+                Manually set each islander as coupled, single and vulnerable, not in villa, or dumped for a specific day/round.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={saveTrackerEntries}
+              className="rounded-full bg-emerald-400 px-5 py-3 text-sm font-semibold text-black transition hover:bg-emerald-300"
+            >
+              Save tracker board
+            </button>
+          </div>
+
+          <label className="mt-4 flex flex-col gap-2 text-sm font-medium text-zinc-300">
+            Round
+            <select
+              value={selectedTrackerRoundId}
+              onChange={(event) => setSelectedTrackerRoundId(event.target.value)}
+              className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition focus:border-emerald-400"
+            >
+              <option value="">Select a round</option>
+              {rounds.map((round) => (
+                <option key={round.id} value={round.id}>
+                  {round.title} ({round.status})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {selectedTrackerRound ? (
+            <div className="mt-6 space-y-3">
+              {contestants.map((contestant) => (
+                <div
+                  key={`tracker-${selectedTrackerRound.id}-${contestant.id}`}
+                  className="grid gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 lg:grid-cols-[1.1fr_0.75fr_0.95fr]"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="relative h-12 w-12 overflow-hidden rounded-full border border-zinc-800 bg-zinc-950">
+                      {contestant.image_url ? (
+                        <Image
+                          src={contestant.image_url}
+                          alt={contestant.name}
+                          fill
+                          className="object-cover"
+                        />
+                      ) : null}
+                    </div>
+                    <div>
+                      <p className="font-semibold text-zinc-100">{contestant.name}</p>
+                      <p className="text-xs uppercase tracking-[0.18em] text-zinc-500">
+                        {getContestantTypeLabel(contestant.contestant_type)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                    State
+                    <select
+                      value={trackerStatesByContestantId[contestant.id] ?? ""}
+                      onChange={(event) =>
+                        setTrackerStatesByContestantId((currentValue) => ({
+                          ...currentValue,
+                          [contestant.id]: event.target.value,
+                        }))
+                      }
+                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-emerald-400"
+                    >
+                      <option value="">Leave auto / blank</option>
+                      <option value="coupled">In a couple</option>
+                      <option value="single">Single and vulnerable</option>
+                      <option value="not_in_villa">Not in villa</option>
+                      <option value="dumped">Dumped</option>
+                    </select>
+                  </label>
+
+                  <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                    Partner
+                    <select
+                      value={trackerPartnersByContestantId[contestant.id] ?? ""}
+                      onChange={(event) =>
+                        setTrackerPartnersByContestantId((currentValue) => ({
+                          ...currentValue,
+                          [contestant.id]: event.target.value,
+                        }))
+                      }
+                      disabled={trackerStatesByContestantId[contestant.id] !== "coupled"}
+                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition disabled:cursor-not-allowed disabled:opacity-50 focus:border-sky-400"
+                    >
+                      <option value="">Select partner</option>
+                      {contestants
+                        .filter((otherContestant) => otherContestant.id !== contestant.id)
+                        .map((otherContestant) => (
+                          <option key={otherContestant.id} value={otherContestant.id}>
+                            {otherContestant.name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-4 text-zinc-400">Choose a round to start editing the villa board.</p>
           )}
         </section>
 

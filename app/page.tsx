@@ -14,6 +14,7 @@ import {
   storeLeagueUser,
   type LeagueUser,
 } from "@/lib/leagueUser";
+import { isRecouplingPrediction } from "@/lib/predictionTypes";
 import { supabase } from "@/lib/supabaseClient";
 
 type Contestant = {
@@ -28,11 +29,41 @@ type Round = {
   id: string;
   title: string;
   status: string;
+  prediction_type: string;
 };
 
 type ActualCouple = {
+  round_id: string;
   contestant_1_id: string;
   contestant_2_id: string;
+};
+
+type RoundResult = {
+  round_id: string;
+  result_type: string;
+  contestant_id: string | null;
+};
+
+type RoundBombshellRow = {
+  round_id: string;
+  bombshell_contestant_id: string;
+};
+
+type RoundTrackerEntry = {
+  round_id: string;
+  contestant_id: string;
+  tracker_state: string;
+  partner_contestant_id: string | null;
+};
+
+type VillaHistoryBoard = Record<string, Record<string, string>>;
+
+type FeedNotification = {
+  id: string;
+  user_name: string;
+  message: string;
+  message_type: string | null;
+  created_at: string;
 };
 
 function normalizeEmail(email: string) {
@@ -43,6 +74,120 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function getTrackerCellStyles(value: string) {
+  if (value === "Dumped") {
+    return "bg-red-500/20 text-red-100 italic";
+  }
+
+  if (value === "Single and vulnerable") {
+    return "bg-fuchsia-300/15 text-fuchsia-100 italic";
+  }
+
+  if (value === "Not in villa") {
+    return "bg-zinc-800/80 text-zinc-300 italic";
+  }
+
+  if (value === "Unknown") {
+    return "bg-zinc-900 text-zinc-400";
+  }
+
+  return "bg-transparent text-zinc-100";
+}
+
+function formatMessageTimeEST(timestamp: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(new Date(timestamp));
+}
+
+function getCurrentEasternParts() {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+
+  return {
+    weekday: values.weekday,
+    year: Number(values.year),
+    month: Number(values.month),
+    day: Number(values.day),
+    hour: Number(values.hour),
+  };
+}
+
+function getEpisodeNoticeNotification(): FeedNotification | null {
+  const eastern = getCurrentEasternParts();
+  const isEpisodeDay = eastern.weekday !== "Wed" && eastern.weekday !== "Sat";
+
+  if (!isEpisodeDay) {
+    return null;
+  }
+
+  const dateLabel = `${eastern.year}-${String(eastern.month).padStart(2, "0")}-${String(
+    eastern.day
+  ).padStart(2, "0")}`;
+  const createdAt = new Date().toISOString();
+
+  if (eastern.hour < 21) {
+    return {
+      id: `episode-upcoming-${dateLabel}`,
+      user_name: "Villa Feed",
+      message_type: "system",
+      message:
+        "Episode night update: tonight’s episode starts at 9:00 PM ET. Finalize your picks before the villa opens.",
+      created_at: createdAt,
+    };
+  }
+
+  return {
+    id: `episode-live-${dateLabel}`,
+    user_name: "Villa Feed",
+    message_type: "system",
+    message:
+      "Episode is live now. Love Island starts at 9:00 PM ET tonight, so the villa chaos is officially open.",
+    created_at: createdAt,
+  };
+}
+
+function mapTrackerStateToCellValue(
+  trackerState: string,
+  partnerContestantId: string | null,
+  idToName: Map<string, string>
+) {
+  if (trackerState === "coupled") {
+    return partnerContestantId ? idToName.get(partnerContestantId) ?? "Unknown" : "Unknown";
+  }
+
+  if (trackerState === "single") {
+    return "Single and vulnerable";
+  }
+
+  if (trackerState === "not_in_villa") {
+    return "Not in villa";
+  }
+
+  if (trackerState === "dumped") {
+    return "Dumped";
+  }
+
+  return "Unknown";
+}
+
 export default function Home() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -50,10 +195,14 @@ export default function Home() {
   const [submitting, setSubmitting] = useState(false);
   const [loadingUser, setLoadingUser] = useState(true);
   const [contestants, setContestants] = useState<Contestant[]>([]);
-  const [latestRound, setLatestRound] = useState<Round | null>(null);
+  const [rounds, setRounds] = useState<Round[]>([]);
   const [partnerMap, setPartnerMap] = useState<Record<string, string>>({});
+  const [villaHistoryBoard, setVillaHistoryBoard] = useState<VillaHistoryBoard>({});
+  const [recentNotifications, setRecentNotifications] = useState<FeedNotification[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const latestRound = rounds[rounds.length - 1] ?? null;
+  const trackerRounds = rounds.slice(-6);
 
   useEffect(() => {
     const hydratePage = async () => {
@@ -63,7 +212,12 @@ export default function Home() {
 
       const [
         { data: contestantsData },
-        { data: latestRoundData },
+        { data: roundsData },
+        { data: actualCouplesData },
+        { data: roundResultsData },
+        { data: roundBombshellsData },
+        { data: trackerEntriesData },
+        { data: feedNotificationData },
       ] = await Promise.all([
         supabase
           .from("contestants")
@@ -71,35 +225,144 @@ export default function Home() {
           .order("name"),
         supabase
           .from("rounds")
-          .select("id, title, status")
+          .select("id, title, status, prediction_type")
+          .order("created_at", { ascending: true }),
+        supabase
+          .from("actual_couples")
+          .select("round_id, contestant_1_id, contestant_2_id"),
+        supabase
+          .from("round_results")
+          .select("round_id, result_type, contestant_id"),
+        supabase
+          .from("round_bombshells")
+          .select("round_id, bombshell_contestant_id"),
+        supabase
+          .from("round_tracker_entries")
+          .select("round_id, contestant_id, tracker_state, partner_contestant_id"),
+        supabase
+          .from("chat_messages")
+          .select("id, user_name, message_type, message, created_at")
+          .eq("message_type", "system")
           .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
+          .limit(3),
       ]);
 
       const nextContestants = (contestantsData ?? []) as Contestant[];
       setContestants(nextContestants);
-      const round = (latestRoundData ?? null) as Round | null;
-      setLatestRound(round);
+      const nextRounds = (roundsData ?? []) as Round[];
+      setRounds(nextRounds);
 
-      if (round) {
-        const { data: actualCouplesData } = await supabase
-          .from("actual_couples")
-          .select("contestant_1_id, contestant_2_id")
-          .eq("round_id", round.id);
+      const idToName = new Map(nextContestants.map((contestant) => [contestant.id, contestant.name]));
+      const couplesByRoundId = ((actualCouplesData ?? []) as ActualCouple[]).reduce<
+        Record<string, ActualCouple[]>
+      >((map, couple) => {
+        map[couple.round_id] = [...(map[couple.round_id] ?? []), couple];
+        return map;
+      }, {});
+      const dumpedByRoundId = ((roundResultsData ?? []) as RoundResult[]).reduce<
+        Record<string, string[]>
+      >((map, result) => {
+        if (result.result_type === "dumped_pick" && result.contestant_id) {
+          map[result.round_id] = [...(map[result.round_id] ?? []), result.contestant_id];
+        }
+        return map;
+      }, {});
+      const bombshellsByRoundId = ((roundBombshellsData ?? []) as RoundBombshellRow[]).reduce<
+        Record<string, string[]>
+      >((map, row) => {
+        map[row.round_id] = [...(map[row.round_id] ?? []), row.bombshell_contestant_id];
+        return map;
+      }, {});
+      const trackerEntriesByRoundId = ((trackerEntriesData ?? []) as RoundTrackerEntry[]).reduce<
+        Record<string, RoundTrackerEntry[]>
+      >((map, entry) => {
+        map[entry.round_id] = [...(map[entry.round_id] ?? []), entry];
+        return map;
+      }, {});
 
-        const idToName = new Map(nextContestants.map((contestant) => [contestant.id, contestant.name]));
-        const nextPartnerMap: Record<string, string> = {};
+      const currentStateByContestant = nextContestants.reduce<Record<string, string>>(
+        (map, contestant) => {
+          map[contestant.id] =
+            contestant.contestant_type === "original_islander"
+              ? "Single and vulnerable"
+              : "Not in villa";
+          return map;
+        },
+        {}
+      );
+      const dumpedContestantIds = new Set<string>();
+      const historySnapshots: VillaHistoryBoard = {};
 
-        ((actualCouplesData ?? []) as ActualCouple[]).forEach((couple) => {
-          nextPartnerMap[couple.contestant_1_id] =
-            idToName.get(couple.contestant_2_id) ?? "TBD";
-          nextPartnerMap[couple.contestant_2_id] =
-            idToName.get(couple.contestant_1_id) ?? "TBD";
+      nextRounds.forEach((round) => {
+        const roundBombshellIds = bombshellsByRoundId[round.id] ?? [];
+        roundBombshellIds.forEach((contestantId) => {
+            if (!dumpedContestantIds.has(contestantId) && currentStateByContestant[contestantId] === "Not in villa") {
+            currentStateByContestant[contestantId] = "Single and vulnerable";
+          }
         });
 
-        setPartnerMap(nextPartnerMap);
-      }
+        if (isRecouplingPrediction(round.prediction_type)) {
+          Object.keys(currentStateByContestant).forEach((contestantId) => {
+            if (!dumpedContestantIds.has(contestantId) && currentStateByContestant[contestantId] !== "Not in villa") {
+              currentStateByContestant[contestantId] = "Single and vulnerable";
+            }
+          });
+
+          (couplesByRoundId[round.id] ?? []).forEach((couple) => {
+            currentStateByContestant[couple.contestant_1_id] =
+              idToName.get(couple.contestant_2_id) ?? "Unknown";
+            currentStateByContestant[couple.contestant_2_id] =
+              idToName.get(couple.contestant_1_id) ?? "Unknown";
+          });
+        }
+
+        (dumpedByRoundId[round.id] ?? []).forEach((contestantId) => {
+          dumpedContestantIds.add(contestantId);
+          currentStateByContestant[contestantId] = "Dumped";
+        });
+
+        (trackerEntriesByRoundId[round.id] ?? []).forEach((entry) => {
+          currentStateByContestant[entry.contestant_id] = mapTrackerStateToCellValue(
+            entry.tracker_state,
+            entry.partner_contestant_id,
+            idToName
+          );
+        });
+
+        historySnapshots[round.id] = { ...currentStateByContestant };
+      });
+
+      setVillaHistoryBoard(historySnapshots);
+
+      const finalPartnerMap: Record<string, string> = {};
+      Object.entries(currentStateByContestant).forEach(([contestantId, value]) => {
+        if (
+          value !== "Single and vulnerable" &&
+          value !== "Dumped" &&
+          value !== "Not in villa"
+        ) {
+          finalPartnerMap[contestantId] = value;
+        }
+      });
+      setPartnerMap(finalPartnerMap);
+
+      const episodeNotice = getEpisodeNoticeNotification();
+      const nextNotifications = [
+        ...((feedNotificationData ?? []) as FeedNotification[]),
+        ...(episodeNotice ? [episodeNotice] : []),
+      ]
+        .sort(
+          (left, right) =>
+            new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
+        )
+        .filter(
+          (notification, index, notifications) =>
+            notifications.findIndex(
+              (currentNotification) => currentNotification.id === notification.id
+            ) === index
+        )
+        .slice(0, 3);
+      setRecentNotifications(nextNotifications);
 
       setLoadingUser(false);
     };
@@ -337,6 +600,47 @@ export default function Home() {
         {successMessage ? (
           <section className="rounded-3xl border border-emerald-500/40 bg-emerald-950/40 p-4 text-sm text-emerald-200">
             {successMessage}
+          </section>
+        ) : null}
+
+        {recentNotifications.length > 0 ? (
+          <section className="rounded-[2rem] border border-emerald-400/20 bg-zinc-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="text-sm font-medium uppercase tracking-[0.3em] text-emerald-300">
+                  Latest Feed Notifications
+                </p>
+                <h2 className="mt-2 text-2xl font-semibold">What just happened in the villa</h2>
+              </div>
+              <Link
+                href="/chat"
+                className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition hover:border-emerald-300 hover:bg-emerald-500/20"
+              >
+                Open Villa Feed
+              </Link>
+            </div>
+
+            <div className="mt-5 grid gap-3">
+              {recentNotifications.map((notification) => (
+                <article
+                  key={notification.id}
+                  className="rounded-3xl border border-emerald-400/20 bg-emerald-500/8 p-4"
+                >
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-2">
+                      <p className="font-semibold text-zinc-100">{notification.user_name}</p>
+                      <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-100">
+                        Admin
+                      </span>
+                    </div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">
+                      {formatMessageTimeEST(notification.created_at)}
+                    </p>
+                  </div>
+                  <p className="mt-3 text-sm leading-7 text-zinc-300">{notification.message}</p>
+                </article>
+              ))}
+            </div>
           </section>
         ) : null}
 
@@ -619,7 +923,7 @@ export default function Home() {
                     href="/chat"
                     className="rounded-3xl border border-emerald-400/30 bg-emerald-500/10 px-5 py-4 text-center text-sm font-semibold text-emerald-100 transition hover:border-emerald-300 hover:bg-emerald-500/20"
                   >
-                    Villa Chat
+                    Villa Feed
                   </Link>
                 </div>
                 <div className="mt-3">
@@ -646,10 +950,10 @@ export default function Home() {
               <p className="text-sm font-medium uppercase tracking-[0.3em] text-yellow-200">
                 Villa Update Board
               </p>
-              <h2 className="mt-2 text-3xl font-semibold">Coupling and elimination tracker</h2>
+              <h2 className="mt-2 text-3xl font-semibold">Coupling and elimination history</h2>
               <p className="mt-3 max-w-3xl text-sm leading-7 text-zinc-400">
-                A quick-look graphic for who is currently active, who has a confirmed
-                partner, and who is still floating around the villa.
+                A timeline view of how the villa has shifted from round to round, with
+                singles, dumpings, and confirmed couples all tracked in one place.
               </p>
             </div>
             <div className="rounded-full border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-100">
@@ -658,26 +962,52 @@ export default function Home() {
           </div>
 
           <div className="mt-6 overflow-x-auto rounded-[1.5rem] border border-zinc-800">
-            <table className="min-w-full border-collapse text-left">
+            <table className="min-w-[980px] border-collapse text-center">
               <thead>
                 <tr className="bg-zinc-900 text-sm text-zinc-300">
-                  <th className="border-b border-zinc-800 px-4 py-3 font-semibold">Islander</th>
-                  <th className="border-b border-zinc-800 px-4 py-3 font-semibold">Status</th>
-                  <th className="border-b border-zinc-800 px-4 py-3 font-semibold">Type</th>
-                  <th className="border-b border-zinc-800 px-4 py-3 font-semibold">Current partner</th>
-                  <th className="border-b border-zinc-800 px-4 py-3 font-semibold">Villa note</th>
+                  <th rowSpan={2} className="border-b border-r border-zinc-800 px-4 py-3 text-left font-semibold">
+                    Islander
+                  </th>
+                  <th
+                    colSpan={Math.max(trackerRounds.length, 1)}
+                    className="border-b border-r border-zinc-800 px-4 py-3 font-semibold"
+                  >
+                    Round history
+                  </th>
+                  <th rowSpan={2} className="border-b border-zinc-800 px-4 py-3 font-semibold">
+                    Final
+                  </th>
+                </tr>
+                <tr className="bg-zinc-900 text-sm text-zinc-400">
+                  {trackerRounds.length > 0 ? (
+                    trackerRounds.map((round) => (
+                      <th
+                        key={round.id}
+                        className="border-b border-r border-zinc-800 px-4 py-3 font-semibold"
+                      >
+                        {round.title}
+                      </th>
+                    ))
+                  ) : (
+                    <th className="border-b border-r border-zinc-800 px-4 py-3 font-semibold">
+                      Waiting for rounds
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {contestants.length > 0 ? (
                   contestants.map((contestant) => {
-                    const partner = partnerMap[contestant.id];
-                    const isActive = contestant.status === "active";
                     const typeStyles = getContestantTypeStyles(contestant.contestant_type);
+                    const finalState =
+                      partnerMap[contestant.id] ??
+                      (contestant.status === "eliminated"
+                        ? "Dumped"
+                        : "Single and vulnerable");
 
                     return (
                       <tr key={contestant.id} className={typeStyles.rowClassName}>
-                        <td className="border-b border-zinc-900 px-4 py-4 font-semibold text-zinc-100">
+                        <td className="border-b border-r border-zinc-900 px-4 py-4 font-semibold text-zinc-100">
                           <div className="flex items-center gap-3">
                             <div className="relative h-12 w-12 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
                               {contestant.image_url ? (
@@ -689,36 +1019,44 @@ export default function Home() {
                                 />
                               ) : null}
                             </div>
-                            <span>{contestant.name}</span>
+                            <div className="min-w-0">
+                              <p>{contestant.name}</p>
+                              <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                                {getContestantTypeLabel(contestant.contestant_type)}
+                              </p>
+                            </div>
                           </div>
                         </td>
-                        <td className="border-b border-zinc-900 px-4 py-4">
-                          <span
-                            className={
-                              isActive
-                                ? "rounded-full border border-pink-400/30 bg-pink-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-pink-200"
-                                : "rounded-full border border-zinc-700 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-400"
-                            }
-                          >
-                            {contestant.status}
-                          </span>
-                        </td>
-                        <td className="border-b border-zinc-900 px-4 py-4">
-                          <span
-                            className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] ${typeStyles.badgeClassName}`}
-                          >
-                            {getContestantTypeLabel(contestant.contestant_type)}
-                          </span>
-                        </td>
-                        <td className="border-b border-zinc-900 px-4 py-4 text-zinc-200">
-                          {partner ?? "TBD"}
-                        </td>
-                        <td className="border-b border-zinc-900 px-4 py-4 text-sm text-zinc-400">
-                          {!isActive
-                            ? "Dumped from the island"
-                            : partner
-                              ? "Locked into the latest confirmed couple"
-                              : "Still open for the next big recoupling"}
+                        {trackerRounds.length > 0 ? (
+                          trackerRounds.map((round) => {
+                            const cellValue =
+                              villaHistoryBoard[round.id]?.[contestant.id] ??
+                              (contestant.contestant_type === "original_islander"
+                                ? "Single and vulnerable"
+                                : "Not in villa");
+
+                            return (
+                              <td
+                                key={`${contestant.id}-${round.id}`}
+                                className={`border-b border-r border-zinc-900 px-4 py-4 text-lg leading-tight ${getTrackerCellStyles(
+                                  cellValue
+                                )}`}
+                              >
+                                {cellValue}
+                              </td>
+                            );
+                          })
+                        ) : (
+                          <td className="border-b border-r border-zinc-900 px-4 py-4 text-zinc-500">
+                            No round data yet
+                          </td>
+                        )}
+                        <td
+                          className={`border-b border-zinc-900 px-4 py-4 text-lg font-medium ${getTrackerCellStyles(
+                            finalState
+                          )}`}
+                        >
+                          {finalState}
                         </td>
                       </tr>
                     );
@@ -726,7 +1064,7 @@ export default function Home() {
                 ) : (
                   <tr>
                     <td
-                      colSpan={5}
+                      colSpan={trackerRounds.length + 2}
                       className="px-4 py-10 text-center text-sm text-zinc-400"
                     >
                       Add contestants in admin to start filling the villa board.
@@ -737,19 +1075,40 @@ export default function Home() {
             </table>
           </div>
 
-          <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-400">
-              Key
-            </p>
-            <div className="mt-3 flex flex-wrap gap-3">
-              {contestantTypeOptions.map((option) => (
-                <div
-                  key={option.value}
-                  className={`rounded-full border px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] ${option.badgeClassName}`}
-                >
-                  {option.label}
+          <div className="mt-5 grid gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 md:grid-cols-2">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-400">
+                Islander key
+              </p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                {contestantTypeOptions.map((option) => (
+                  <div
+                    key={option.value}
+                    className={`rounded-full border px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] ${option.badgeClassName}`}
+                  >
+                    {option.label}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-400">
+                Board key
+              </p>
+              <div className="mt-3 flex flex-wrap gap-3 text-xs font-semibold uppercase tracking-[0.18em]">
+                <div className="rounded-full border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-200">
+                  Partner name
                 </div>
-              ))}
+                <div className="rounded-full border border-fuchsia-400/30 bg-fuchsia-500/10 px-3 py-2 text-fuchsia-100">
+                  Single and vulnerable
+                </div>
+                <div className="rounded-full border border-red-400/30 bg-red-500/10 px-3 py-2 text-red-100">
+                  Dumped
+                </div>
+                <div className="rounded-full border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-300">
+                  Not in villa
+                </div>
+              </div>
             </div>
           </div>
 

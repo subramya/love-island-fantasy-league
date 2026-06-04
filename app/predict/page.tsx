@@ -212,6 +212,20 @@ function formatSavedPredictionTime(timestamp: string | null) {
   return `${eastern} / ${pacific}`;
 }
 
+async function createPredictionFeedPost(user: LeagueUser, round: Round) {
+  const { error } = await supabase.from("chat_messages").insert({
+    user_id: user.id,
+    user_name: "Villa Feed",
+    message_type: "system",
+    message: `${user.name} just locked in predictions for ${round.title}.`,
+    created_at: new Date().toISOString(),
+  });
+
+  if (error) {
+    throw error;
+  }
+}
+
 function CastBoard({ contestants }: { contestants: Contestant[] }) {
   return (
     <div className="rounded-3xl border border-yellow-500/20 bg-yellow-500/5 p-5">
@@ -769,6 +783,11 @@ export default function PredictPage() {
           ? typedPredictions[typedPredictions.length - 1]?.created_at ?? null
           : new Date().toISOString()
       );
+      try {
+        await createPredictionFeedPost(user, openRound);
+      } catch {
+        // Do not block prediction saving if the feed post fails.
+      }
       setSuccessMessage("Predictions saved.");
     }
 

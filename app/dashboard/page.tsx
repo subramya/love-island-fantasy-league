@@ -235,7 +235,7 @@ export default function DashboardPage() {
                 href="/chat"
                 className="rounded-full border border-sky-400/30 bg-sky-500/10 px-5 py-3 text-sm font-semibold text-sky-100 transition hover:border-sky-300 hover:bg-sky-500/20"
               >
-                Open villa chat
+                Open villa feed
               </Link>
               <Link
                 href="/"

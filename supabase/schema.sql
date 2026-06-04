@@ -34,6 +34,15 @@ create table if not exists round_questions (
   created_at timestamp default now()
 );
 
+create table if not exists round_tracker_entries (
+  id uuid primary key default gen_random_uuid(),
+  round_id uuid references rounds(id),
+  contestant_id uuid references contestants(id),
+  tracker_state text not null,
+  partner_contestant_id uuid references contestants(id),
+  created_at timestamp default now()
+);
+
 create table if not exists league_users (
   id uuid primary key default gen_random_uuid(),
   name text not null unique,
@@ -83,6 +92,8 @@ create table if not exists chat_messages (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references league_users(id),
   user_name text not null,
+  message_type text default 'user',
+  reply_to_message_id uuid references chat_messages(id),
   message text not null,
   created_at timestamp default now()
 );
