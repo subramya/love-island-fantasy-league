@@ -66,6 +66,13 @@ type FeedNotification = {
   created_at: string;
 };
 
+type EpisodeRecap = {
+  id: string;
+  round_id: string;
+  headline: string | null;
+  recap_text: string;
+};
+
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
@@ -199,10 +206,12 @@ export default function Home() {
   const [partnerMap, setPartnerMap] = useState<Record<string, string>>({});
   const [villaHistoryBoard, setVillaHistoryBoard] = useState<VillaHistoryBoard>({});
   const [recentNotifications, setRecentNotifications] = useState<FeedNotification[]>([]);
+  const [episodeRecaps, setEpisodeRecaps] = useState<EpisodeRecap[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const latestRound = rounds[rounds.length - 1] ?? null;
   const trackerRounds = rounds.slice(-6);
+  const latestEpisodeRecap = episodeRecaps[0] ?? null;
 
   useEffect(() => {
     const hydratePage = async () => {
@@ -218,6 +227,7 @@ export default function Home() {
         { data: roundBombshellsData },
         { data: trackerEntriesData },
         { data: feedNotificationData },
+        { data: episodeRecapsData },
       ] = await Promise.all([
         supabase
           .from("contestants")
@@ -245,12 +255,23 @@ export default function Home() {
           .eq("message_type", "system")
           .order("created_at", { ascending: false })
           .limit(3),
+        supabase
+          .from("episode_recaps")
+          .select("id, round_id, headline, recap_text")
+          .order("created_at", { ascending: false }),
       ]);
 
       const nextContestants = (contestantsData ?? []) as Contestant[];
       setContestants(nextContestants);
       const nextRounds = (roundsData ?? []) as Round[];
       setRounds(nextRounds);
+      const roundOrder = new Map(nextRounds.map((round, index) => [round.id, index]));
+      setEpisodeRecaps(
+        ((episodeRecapsData ?? []) as EpisodeRecap[]).sort(
+          (left, right) =>
+            (roundOrder.get(right.round_id) ?? -1) - (roundOrder.get(left.round_id) ?? -1)
+        )
+      );
 
       const idToName = new Map(nextContestants.map((contestant) => [contestant.id, contestant.name]));
       const couplesByRoundId = ((actualCouplesData ?? []) as ActualCouple[]).reduce<
@@ -1113,6 +1134,28 @@ export default function Home() {
           </div>
 
         </section>
+
+        {latestEpisodeRecap ? (
+          <section className="rounded-[2rem] border border-sky-400/20 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
+            <div className="max-w-4xl">
+              <p className="text-sm font-medium uppercase tracking-[0.3em] text-sky-300">
+                Latest Episode Recap
+              </p>
+              <h2 className="mt-2 text-3xl font-semibold">
+                {latestEpisodeRecap.headline?.trim() ||
+                  rounds.find((round) => round.id === latestEpisodeRecap.round_id)?.title ||
+                  "Episode recap"}
+              </h2>
+              <p className="mt-2 text-sm font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                {rounds.find((round) => round.id === latestEpisodeRecap.round_id)?.title ??
+                  "Latest round"}
+              </p>
+              <p className="mt-4 text-sm leading-7 text-zinc-300">
+                {latestEpisodeRecap.recap_text}
+              </p>
+            </div>
+          </section>
+        ) : null}
       </div>
     </main>
   );

@@ -32,7 +32,7 @@ export default function RootLayout({
         <footer className="border-t border-zinc-900 bg-black px-6 py-6 text-center">
           <p className="text-sm text-zinc-500">Created by Ramya Subramanian</p>
           <p className="mt-1 text-xs font-medium uppercase tracking-[0.2em] text-zinc-600">
-            Version 1.7
+            Version 1.8
           </p>
           <p className="mx-auto mt-3 max-w-5xl text-xs leading-6 text-zinc-600">
             Love Island Fantasy League is an independent fan-created project and is not affiliated

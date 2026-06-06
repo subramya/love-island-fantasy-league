@@ -54,6 +54,13 @@ type RoundTrackerEntry = {
   partner_contestant_id: string | null;
 };
 
+type EpisodeRecap = {
+  id: string;
+  round_id: string;
+  headline: string | null;
+  recap_text: string;
+};
+
 type LeagueMember = {
   id: string;
   name: string;
@@ -172,9 +179,13 @@ export default function AdminPage() {
   const [roundTrackerEntriesByRoundId, setRoundTrackerEntriesByRoundId] = useState<
     Record<string, RoundTrackerEntry[]>
   >({});
+  const [episodeRecaps, setEpisodeRecaps] = useState<EpisodeRecap[]>([]);
   const [roundStatus, setRoundStatus] = useState("open");
   const [selectedActualRoundId, setSelectedActualRoundId] = useState("");
   const [selectedTrackerRoundId, setSelectedTrackerRoundId] = useState("");
+  const [recapRoundId, setRecapRoundId] = useState("");
+  const [recapHeadline, setRecapHeadline] = useState("");
+  const [recapText, setRecapText] = useState("");
   const [trackerStatesByContestantId, setTrackerStatesByContestantId] = useState<
     Record<string, string>
   >({});
@@ -224,6 +235,7 @@ export default function AdminPage() {
       { data: roundBombshellsData, error: roundBombshellsError },
       { data: roundQuestionsData, error: roundQuestionsError },
       { data: roundTrackerEntriesData, error: roundTrackerEntriesError },
+      { data: episodeRecapsData, error: episodeRecapsError },
     ] = await Promise.all([
       supabase
         .from("contestants")
@@ -248,6 +260,10 @@ export default function AdminPage() {
       supabase
         .from("round_tracker_entries")
         .select("round_id, contestant_id, tracker_state, partner_contestant_id"),
+      supabase
+        .from("episode_recaps")
+        .select("id, round_id, headline, recap_text")
+        .order("created_at", { ascending: false }),
     ]);
 
     if (
@@ -256,7 +272,8 @@ export default function AdminPage() {
       leagueMembersError ||
       roundBombshellsError ||
       roundQuestionsError ||
-      roundTrackerEntriesError
+      roundTrackerEntriesError ||
+      episodeRecapsError
     ) {
       setErrorMessage(
         contestantsError?.message ??
@@ -265,6 +282,7 @@ export default function AdminPage() {
           roundBombshellsError?.message ??
           roundQuestionsError?.message ??
           roundTrackerEntriesError?.message ??
+          episodeRecapsError?.message ??
           "Unable to load admin data."
       );
       setLoading(false);
@@ -309,6 +327,7 @@ export default function AdminPage() {
     );
     setRoundQuestionsByRoundId(nextRoundQuestionsByRoundId);
     setRoundTrackerEntriesByRoundId(nextRoundTrackerEntriesByRoundId);
+    setEpisodeRecaps((episodeRecapsData ?? []) as EpisodeRecap[]);
     setLeagueMembers((leagueMembersData ?? []) as LeagueMember[]);
     setContestantStatuses(
       nextContestants.reduce<Record<string, string>>((map, contestant) => {
@@ -326,6 +345,7 @@ export default function AdminPage() {
     setSelectedTrackerRoundId((currentValue) => currentValue || nextRounds[0]?.id || "");
     setScoringRoundId((currentValue) => currentValue || nextRounds[0]?.id || "");
     setLeaderboardRoundId((currentValue) => currentValue || nextRounds[0]?.id || "");
+    setRecapRoundId((currentValue) => currentValue || nextRounds[0]?.id || "");
     setLoading(false);
   };
 
@@ -469,6 +489,18 @@ export default function AdminPage() {
     setTrackerPartnersByContestantId(nextPartners);
   }, [isUnlocked, selectedTrackerRoundId, selectedTrackerRound, contestants, roundTrackerEntriesByRoundId]);
 
+  useEffect(() => {
+    if (!isUnlocked) {
+      setRecapHeadline("");
+      setRecapText("");
+      return;
+    }
+
+    const existingRecap = episodeRecaps.find((recap) => recap.round_id === recapRoundId);
+    setRecapHeadline(existingRecap?.headline ?? "");
+    setRecapText(existingRecap?.recap_text ?? "");
+  }, [isUnlocked, recapRoundId, episodeRecaps]);
+
   const handleAdminUnlock = () => {
     setErrorMessage("");
     setSuccessMessage("");
@@ -544,12 +576,14 @@ export default function AdminPage() {
       { error: deleteActualCouplesError },
       { error: deleteRoundResultsError },
       { error: deleteRoundBombshellsError },
+      { error: deleteEpisodeRecapsError },
     ] = await Promise.all([
       supabase.from("scores").delete().eq("round_id", roundId),
       supabase.from("predictions").delete().eq("round_id", roundId),
       supabase.from("actual_couples").delete().eq("round_id", roundId),
       supabase.from("round_results").delete().eq("round_id", roundId),
       supabase.from("round_bombshells").delete().eq("round_id", roundId),
+      supabase.from("episode_recaps").delete().eq("round_id", roundId),
     ]);
 
     if (
@@ -557,7 +591,8 @@ export default function AdminPage() {
       deletePredictionsError ||
       deleteActualCouplesError ||
       deleteRoundResultsError ||
-      deleteRoundBombshellsError
+      deleteRoundBombshellsError ||
+      deleteEpisodeRecapsError
     ) {
       setErrorMessage(
         deleteScoresError?.message ??
@@ -565,6 +600,7 @@ export default function AdminPage() {
           deleteActualCouplesError?.message ??
           deleteRoundResultsError?.message ??
           deleteRoundBombshellsError?.message ??
+          deleteEpisodeRecapsError?.message ??
           "Unable to clear round data before deletion."
       );
       return;
@@ -1075,6 +1111,59 @@ export default function AdminPage() {
       );
       setSuccessMessage("");
     }
+  };
+
+  const saveEpisodeRecap = async () => {
+    if (!recapRoundId) {
+      setErrorMessage("Select a round before saving an episode recap.");
+      setSuccessMessage("");
+      return;
+    }
+
+    if (!recapText.trim()) {
+      setErrorMessage("Write the recap paragraph before saving.");
+      setSuccessMessage("");
+      return;
+    }
+
+    const { error } = await supabase.from("episode_recaps").upsert(
+      {
+        round_id: recapRoundId,
+        headline: recapHeadline.trim() || null,
+        recap_text: recapText.trim(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "round_id" }
+    );
+
+    if (error) {
+      setErrorMessage(error.message);
+      setSuccessMessage("");
+      return;
+    }
+
+    setSuccessMessage("Episode recap saved.");
+    setErrorMessage("");
+    await loadAdminData();
+  };
+
+  const deleteEpisodeRecap = async (roundId: string) => {
+    const { error } = await supabase.from("episode_recaps").delete().eq("round_id", roundId);
+
+    if (error) {
+      setErrorMessage(error.message);
+      setSuccessMessage("");
+      return;
+    }
+
+    if (recapRoundId === roundId) {
+      setRecapHeadline("");
+      setRecapText("");
+    }
+
+    setSuccessMessage("Episode recap deleted.");
+    setErrorMessage("");
+    await loadAdminData();
   };
 
   const getRecipientEmails = () => {
@@ -2259,6 +2348,110 @@ export default function AdminPage() {
             >
               Run scoring
             </button>
+          </div>
+        </section>
+
+        <section className="rounded-[2rem] border border-yellow-300/20 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
+          <h2 className="text-xl font-semibold">Episode recap editor</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-7 text-zinc-400">
+            Add one sharp recap paragraph per round so the homepage reads like a quick-hit episode
+            diary. Think punchy, dramatic, and short enough to scan in one breath.
+          </p>
+
+          <div className="mt-5 grid gap-4 lg:grid-cols-[0.95fr_1.05fr]">
+            <div className="rounded-3xl border border-zinc-800 bg-zinc-900/70 p-5">
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                Round / episode
+                <select
+                  value={recapRoundId}
+                  onChange={(event) => setRecapRoundId(event.target.value)}
+                  className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
+                >
+                  <option value="">Select a round</option>
+                  {rounds.map((round) => (
+                    <option key={round.id} value={round.id}>
+                      {round.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="mt-4 flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                Optional headline
+                <input
+                  type="text"
+                  value={recapHeadline}
+                  onChange={(event) => setRecapHeadline(event.target.value)}
+                  placeholder="The villa finally cracked"
+                  className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-sky-400"
+                />
+              </label>
+
+              <label className="mt-4 flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                Recap paragraph
+                <textarea
+                  value={recapText}
+                  onChange={(event) => setRecapText(event.target.value)}
+                  rows={6}
+                  maxLength={650}
+                  placeholder="One paragraph with the main mess: who coupled up, who spiraled, who got pulled for chats, and what twist set tomorrow on fire."
+                  className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-sky-400"
+                />
+              </label>
+
+              <p className="mt-3 text-xs text-zinc-500">
+                Keep it to one paragraph. Current length: {recapText.trim().length} characters.
+              </p>
+
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={saveEpisodeRecap}
+                  className="rounded-full bg-sky-400 px-5 py-3 text-sm font-semibold text-black transition hover:bg-sky-300"
+                >
+                  Save recap
+                </button>
+                {episodeRecaps.some((recap) => recap.round_id === recapRoundId) ? (
+                  <button
+                    type="button"
+                    onClick={() => deleteEpisodeRecap(recapRoundId)}
+                    className="rounded-full border border-red-500/30 bg-red-500/10 px-5 py-3 text-sm font-semibold text-red-200 transition hover:border-red-400 hover:bg-red-500/20"
+                  >
+                    Delete recap
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-zinc-800 bg-zinc-900/70 p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                Saved recaps
+              </p>
+              {episodeRecaps.length > 0 ? (
+                <div className="mt-4 space-y-3">
+                  {episodeRecaps.map((recap) => (
+                    <article
+                      key={recap.id}
+                      className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-4"
+                    >
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                        {rounds.find((round) => round.id === recap.round_id)?.title ?? "Episode"}
+                      </p>
+                      <h3 className="mt-2 text-lg font-semibold text-zinc-100">
+                        {recap.headline?.trim() ||
+                          rounds.find((round) => round.id === recap.round_id)?.title ||
+                          "Episode recap"}
+                      </h3>
+                      <p className="mt-3 text-sm leading-7 text-zinc-300">{recap.recap_text}</p>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-4 text-sm text-zinc-400">
+                  No episode recaps saved yet.
+                </p>
+              )}
+            </div>
           </div>
         </section>
 

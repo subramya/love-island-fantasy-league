@@ -43,6 +43,15 @@ create table if not exists round_tracker_entries (
   created_at timestamp default now()
 );
 
+create table if not exists episode_recaps (
+  id uuid primary key default gen_random_uuid(),
+  round_id uuid not null unique references rounds(id),
+  headline text,
+  recap_text text not null,
+  created_at timestamp default now(),
+  updated_at timestamp default now()
+);
+
 create table if not exists league_users (
   id uuid primary key default gen_random_uuid(),
   name text not null unique,
