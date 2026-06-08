@@ -132,11 +132,16 @@ function describeRoundResults(
       roundResults.find(
         (result) => result.round_id === round.id && result.result_type === "bottom_group_pick"
       )?.contestant_id ?? null;
+    const bottomGroupNoScore = roundResults.some(
+      (result) => result.round_id === round.id && result.result_type === "bottom_group_pick_no_score"
+    );
 
     const dumpedName = dumpedId ? contestantsById.get(dumpedId) ?? "Unknown" : "Not set";
-    const bottomGroupName = bottomGroupId
-      ? contestantsById.get(bottomGroupId) ?? "Unknown"
-      : "Not set";
+    const bottomGroupName = bottomGroupNoScore
+      ? "No score"
+      : bottomGroupId
+        ? contestantsById.get(bottomGroupId) ?? "Unknown"
+        : "Not set";
 
     return `Dumped: ${dumpedName} • Bottom group: ${bottomGroupName}`;
   }
@@ -364,6 +369,9 @@ function buildScoreBreakdown(
     const bottomGroupActual = roundResults.find(
       (result) => result.round_id === round.id && result.result_type === "bottom_group_pick"
     );
+    const bottomGroupNoScore = roundResults.some(
+      (result) => result.round_id === round.id && result.result_type === "bottom_group_pick_no_score"
+    );
     const dumpedPrediction = predictions.find((prediction) => prediction.prediction_role === "dumped_pick");
     const bottomGroupPrediction = predictions.find(
       (prediction) => prediction.prediction_role === "bottom_group_pick"
@@ -379,11 +387,13 @@ function buildScoreBreakdown(
           ? `Dumped pick (${getContestantName(contestantsById, dumpedPrediction.contestant_1_id)}): correct (+5)`
           : `Dumped pick (${getContestantName(contestantsById, dumpedPrediction.contestant_1_id)}): incorrect (+0)`
         : "No dumped pick saved (+0)",
-      bottomGroupPrediction
-        ? bottomGroupActual && bottomGroupPrediction.contestant_1_id === bottomGroupActual.contestant_id
-          ? `Bottom group pick (${getContestantName(contestantsById, bottomGroupPrediction.contestant_1_id)}): correct (+2)`
-          : `Bottom group pick (${getContestantName(contestantsById, bottomGroupPrediction.contestant_1_id)}): incorrect (+0)`
-        : "No bottom group pick saved (+0)",
+      bottomGroupNoScore
+        ? "Bottom group pick: no-score for this round"
+        : bottomGroupPrediction
+          ? bottomGroupActual && bottomGroupPrediction.contestant_1_id === bottomGroupActual.contestant_id
+            ? `Bottom group pick (${getContestantName(contestantsById, bottomGroupPrediction.contestant_1_id)}): correct (+2)`
+            : `Bottom group pick (${getContestantName(contestantsById, bottomGroupPrediction.contestant_1_id)}): incorrect (+0)`
+          : "No bottom group pick saved (+0)",
     ];
   }
 

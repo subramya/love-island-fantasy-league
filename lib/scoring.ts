@@ -108,6 +108,9 @@ export function calculateEliminationScores(
   const bottomGroupResultId =
     roundResults.find((result) => result.result_type === "bottom_group_pick")?.contestant_id ??
     null;
+  const bottomGroupIsNoScore = roundResults.some(
+    (result) => result.result_type === "bottom_group_pick_no_score"
+  );
 
   for (const prediction of predictions) {
     if (prediction.prediction_role === "dumped_pick" && prediction.contestant_1_id === dumpedResultId) {
@@ -116,6 +119,7 @@ export function calculateEliminationScores(
 
     if (
       prediction.prediction_role === "bottom_group_pick" &&
+      !bottomGroupIsNoScore &&
       bottomGroupResultId &&
       prediction.contestant_1_id === bottomGroupResultId
     ) {

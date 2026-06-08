@@ -202,6 +202,7 @@ export default function AdminPage() {
   const [nextCoupleRowId, setNextCoupleRowId] = useState(2);
   const [actualDumpedContestantId, setActualDumpedContestantId] = useState("");
   const [actualBottomGroupContestantId, setActualBottomGroupContestantId] = useState("");
+  const [actualBottomGroupNoScore, setActualBottomGroupNoScore] = useState(false);
   const [actualBombshellTargetIdsByBombshell, setActualBombshellTargetIdsByBombshell] = useState<
     Record<string, string>
   >({});
@@ -360,6 +361,7 @@ export default function AdminPage() {
         setNextCoupleRowId(2);
         setActualDumpedContestantId("");
         setActualBottomGroupContestantId("");
+        setActualBottomGroupNoScore(false);
         setActualBombshellTargetIdsByBombshell({});
         setActualQuestionAnswerIdsByQuestion({});
         return;
@@ -390,7 +392,7 @@ export default function AdminPage() {
               contestant2Id: couple.contestant_2_id,
             }))
           );
-          setNextCoupleRowId(typedCouples.length + 1);
+        setNextCoupleRowId(typedCouples.length + 1);
         } else {
           setActualCoupleRows([createEmptyCoupleRow(1)]);
           setNextCoupleRowId(2);
@@ -398,6 +400,7 @@ export default function AdminPage() {
 
         setActualDumpedContestantId("");
         setActualBottomGroupContestantId("");
+        setActualBottomGroupNoScore(false);
         setActualBombshellTargetIdsByBombshell({});
         setActualQuestionAnswerIdsByQuestion({});
         return;
@@ -427,6 +430,9 @@ export default function AdminPage() {
         setActualBottomGroupContestantId(
           typedResults.find((result) => result.result_type === "bottom_group_pick")?.contestant_id ??
             ""
+        );
+        setActualBottomGroupNoScore(
+          typedResults.some((result) => result.result_type === "bottom_group_pick_no_score")
         );
         setActualBombshellTargetIdsByBombshell(
           typedResults.reduce<Record<string, string>>((map, result) => {
@@ -459,6 +465,7 @@ export default function AdminPage() {
       setNextCoupleRowId(2);
       setActualDumpedContestantId("");
       setActualBottomGroupContestantId("");
+      setActualBottomGroupNoScore(false);
       setActualBombshellTargetIdsByBombshell({});
       setActualQuestionAnswerIdsByQuestion({});
     };
@@ -862,6 +869,7 @@ export default function AdminPage() {
     }
 
     if (
+      !actualBottomGroupNoScore &&
       actualBottomGroupContestantId &&
       actualBottomGroupContestantId === actualDumpedContestantId
     ) {
@@ -876,7 +884,15 @@ export default function AdminPage() {
         result_type: "dumped_pick",
         contestant_id: actualDumpedContestantId,
       },
-      ...(actualBottomGroupContestantId
+      ...(actualBottomGroupNoScore
+        ? [
+            {
+              round_id: selectedActualRoundId,
+              result_type: "bottom_group_pick_no_score",
+              contestant_id: null,
+            },
+          ]
+        : actualBottomGroupContestantId
         ? [
             {
               round_id: selectedActualRoundId,
@@ -2194,11 +2210,22 @@ export default function AdminPage() {
                 <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
                   Bottom group survivor
                   <select
-                    value={actualBottomGroupContestantId}
-                    onChange={(event) => setActualBottomGroupContestantId(event.target.value)}
+                    value={actualBottomGroupNoScore ? "__no_score__" : actualBottomGroupContestantId}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      if (nextValue === "__no_score__") {
+                        setActualBottomGroupNoScore(true);
+                        setActualBottomGroupContestantId("");
+                        return;
+                      }
+
+                      setActualBottomGroupNoScore(false);
+                      setActualBottomGroupContestantId(nextValue);
+                    }}
                     className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-yellow-300"
                   >
                     <option value="">Optional partial-credit result</option>
+                    <option value="__no_score__">No-score for this question</option>
                     {contestants.map((contestant) => (
                       <option key={contestant.id} value={contestant.id}>
                         {contestant.name}
@@ -2206,6 +2233,11 @@ export default function AdminPage() {
                     ))}
                   </select>
                 </label>
+                {actualBottomGroupNoScore ? (
+                  <p className="text-sm text-yellow-200">
+                    The second elimination question will count as no-score for everyone in this round.
+                  </p>
+                ) : null}
                 <button
                   type="button"
                   onClick={saveEliminationResults}
