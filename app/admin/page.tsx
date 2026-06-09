@@ -115,6 +115,21 @@ function createEmptyQuestionPrompt() {
   return "";
 }
 
+const ISLANDER_IMAGE_BUCKET = "islander-images";
+
+function slugifyContestantName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function getFileExtension(fileName: string) {
+  const lastSegment = fileName.split(".").pop()?.toLowerCase();
+  return lastSegment && lastSegment !== fileName.toLowerCase() ? lastSegment : "jpg";
+}
+
 type BombshellSelectorGroupProps = {
   contestants: Contestant[];
   selectedIds: string[];
@@ -159,10 +174,18 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [contestantName, setContestantName] = useState("");
   const [contestantImageUrl, setContestantImageUrl] = useState("");
+  const [contestantImageFile, setContestantImageFile] = useState<File | null>(null);
+  const [uploadingContestantImage, setUploadingContestantImage] = useState(false);
   const [newContestantStatus, setNewContestantStatus] = useState("active");
   const [newContestantType, setNewContestantType] = useState("original_islander");
   const [contestantStatuses, setContestantStatuses] = useState<Record<string, string>>({});
   const [contestantTypes, setContestantTypes] = useState<Record<string, string>>({});
+  const [contestantImageFilesById, setContestantImageFilesById] = useState<Record<string, File | null>>(
+    {}
+  );
+  const [uploadingContestantImageById, setUploadingContestantImageById] = useState<
+    Record<string, boolean>
+  >({});
   const [roundTitle, setRoundTitle] = useState("");
   const [predictionType, setPredictionType] = useState("recoupling_prediction");
   const [selectedBombshellContestantIds, setSelectedBombshellContestantIds] = useState<string[]>([]);
@@ -546,10 +569,97 @@ export default function AdminPage() {
 
     setContestantName("");
     setContestantImageUrl("");
+    setContestantImageFile(null);
     setNewContestantStatus("active");
     setNewContestantType("original_islander");
     setSuccessMessage("Contestant added.");
     await loadAdminData();
+  };
+
+  const uploadContestantImage = async (contestantId?: string) => {
+    const file = contestantId ? contestantImageFilesById[contestantId] : contestantImageFile;
+    const fallbackName = contestantId
+      ? contestants.find((contestant) => contestant.id === contestantId)?.name ?? "islander"
+      : contestantName || "islander";
+
+    if (!file) {
+      setErrorMessage("Choose an image file before uploading.");
+      setSuccessMessage("");
+      return;
+    }
+
+    const safeBaseName = slugifyContestantName(fallbackName) || "islander";
+    const fileExtension = getFileExtension(file.name);
+    const storagePath = `${safeBaseName}-${Date.now()}.${fileExtension}`;
+
+    if (contestantId) {
+      setUploadingContestantImageById((currentValue) => ({
+        ...currentValue,
+        [contestantId]: true,
+      }));
+    } else {
+      setUploadingContestantImage(true);
+    }
+
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    const { error: uploadError } = await supabase.storage
+      .from(ISLANDER_IMAGE_BUCKET)
+      .upload(storagePath, file, {
+        cacheControl: "3600",
+        upsert: true,
+      });
+
+    if (uploadError) {
+      setErrorMessage(
+        `${uploadError.message} Run supabase/add-islander-image-storage.sql if the storage bucket is not set up yet.`
+      );
+      setSuccessMessage("");
+      if (contestantId) {
+        setUploadingContestantImageById((currentValue) => ({
+          ...currentValue,
+          [contestantId]: false,
+        }));
+      } else {
+        setUploadingContestantImage(false);
+      }
+      return;
+    }
+
+    const {
+      data: { publicUrl },
+    } = supabase.storage.from(ISLANDER_IMAGE_BUCKET).getPublicUrl(storagePath);
+
+    if (contestantId) {
+      const { error: updateError } = await supabase
+        .from("contestants")
+        .update({ image_url: publicUrl })
+        .eq("id", contestantId);
+
+      if (updateError) {
+        setErrorMessage(updateError.message);
+        setSuccessMessage("");
+      } else {
+        setContestantImageFilesById((currentValue) => ({
+          ...currentValue,
+          [contestantId]: null,
+        }));
+        setSuccessMessage("Contestant image uploaded.");
+        await loadAdminData();
+      }
+
+      setUploadingContestantImageById((currentValue) => ({
+        ...currentValue,
+        [contestantId]: false,
+      }));
+      return;
+    }
+
+    setContestantImageUrl(publicUrl);
+    setContestantImageFile(null);
+    setUploadingContestantImage(false);
+    setSuccessMessage("Image uploaded. It will be attached when you add the contestant.");
   };
 
   const updateContestantProfile = async (contestantId: string) => {
@@ -1706,15 +1816,39 @@ export default function AdminPage() {
                 />
               </label>
               <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
-                Image path
+                Contestant image
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => setContestantImageFile(event.target.files?.[0] ?? null)}
+                  className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-200 file:mr-4 file:rounded-full file:border-0 file:bg-sky-400 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-sky-300"
+                />
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void uploadContestantImage()}
+                    disabled={!contestantImageFile || uploadingContestantImage}
+                    className="rounded-full border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-100 transition hover:border-sky-300 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {uploadingContestantImage ? "Uploading..." : "Upload image"}
+                  </button>
+                  {contestantImageUrl ? (
+                    <span className="self-center text-xs text-emerald-300">
+                      Image ready to attach
+                    </span>
+                  ) : null}
+                </div>
+              </label>
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                Or paste image URL
                 <input
                   value={contestantImageUrl}
                   onChange={(event) => setContestantImageUrl(event.target.value)}
-                  placeholder="/islanders/jane-doe.webp"
+                  placeholder="https://..."
                   className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-sky-400"
                 />
                 <span className="text-xs text-zinc-500">
-                  Optional. Drop the image in `public/islanders` and paste the path here.
+                  Easier option: upload above. URL paste is still here if you ever need it.
                 </span>
               </label>
               <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
@@ -1943,43 +2077,71 @@ export default function AdminPage() {
                       </p>
                     </div>
                   </div>
-                  <div className="flex flex-col gap-3 sm:flex-row">
-                    <select
-                      value={contestantStatuses[contestant.id] ?? contestant.status}
-                      onChange={(event) =>
-                        setContestantStatuses((currentValue) => ({
-                          ...currentValue,
-                          [contestant.id]: event.target.value,
-                        }))
-                      }
-                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-pink-400"
-                    >
-                      <option value="active">active</option>
-                      <option value="eliminated">eliminated</option>
-                    </select>
-                    <select
-                      value={contestantTypes[contestant.id] ?? contestant.contestant_type}
-                      onChange={(event) =>
-                        setContestantTypes((currentValue) => ({
-                          ...currentValue,
-                          [contestant.id]: event.target.value,
-                        }))
-                      }
-                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
-                    >
-                      {contestantTypeOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => updateContestantProfile(contestant.id)}
-                      className="rounded-full border border-zinc-700 bg-zinc-950 px-5 py-3 text-sm font-semibold text-zinc-100 transition hover:border-pink-400 hover:text-pink-300"
-                    >
-                      Save contestant
-                    </button>
+                  <div className="flex flex-1 flex-col gap-3">
+                    <div className="flex flex-col gap-3 sm:flex-row">
+                      <select
+                        value={contestantStatuses[contestant.id] ?? contestant.status}
+                        onChange={(event) =>
+                          setContestantStatuses((currentValue) => ({
+                            ...currentValue,
+                            [contestant.id]: event.target.value,
+                          }))
+                        }
+                        className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-pink-400"
+                      >
+                        <option value="active">active</option>
+                        <option value="eliminated">eliminated</option>
+                      </select>
+                      <select
+                        value={contestantTypes[contestant.id] ?? contestant.contestant_type}
+                        onChange={(event) =>
+                          setContestantTypes((currentValue) => ({
+                            ...currentValue,
+                            [contestant.id]: event.target.value,
+                          }))
+                        }
+                        className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
+                      >
+                        {contestantTypeOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => updateContestantProfile(contestant.id)}
+                        className="rounded-full border border-zinc-700 bg-zinc-950 px-5 py-3 text-sm font-semibold text-zinc-100 transition hover:border-pink-400 hover:text-pink-300"
+                      >
+                        Save contestant
+                      </button>
+                    </div>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(event) =>
+                          setContestantImageFilesById((currentValue) => ({
+                            ...currentValue,
+                            [contestant.id]: event.target.files?.[0] ?? null,
+                          }))
+                        }
+                        className="w-full rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-200 file:mr-4 file:rounded-full file:border-0 file:bg-sky-400 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-sky-300"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void uploadContestantImage(contestant.id)}
+                        disabled={
+                          !contestantImageFilesById[contestant.id] ||
+                          uploadingContestantImageById[contestant.id]
+                        }
+                        className="rounded-full border border-sky-400/30 bg-sky-500/10 px-5 py-3 text-sm font-semibold text-sky-100 transition hover:border-sky-300 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {uploadingContestantImageById[contestant.id]
+                          ? "Uploading..."
+                          : "Replace image"}
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
