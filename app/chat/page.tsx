@@ -136,7 +136,7 @@ export default function ChatPage() {
       if (error) {
         setErrorMessage(formatFeedError(error.message));
       } else {
-        setMessages(((data ?? []) as FeedMessage[]).reverse());
+        setMessages((data ?? []) as FeedMessage[]);
       }
 
       setLoading(false);
@@ -175,9 +175,19 @@ export default function ChatPage() {
     }
 
     return nextItems.sort(
-      (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime()
+      (left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
     );
   }, [episodeNotice, messages]);
+
+  const notificationItems = useMemo(
+    () => feedItems.filter((item) => item.message_type === "system").slice(0, 5),
+    [feedItems]
+  );
+
+  const conversationItems = useMemo(
+    () => feedItems.filter((item) => item.message_type !== "system"),
+    [feedItems]
+  );
 
   const replyTarget = replyToId ? messagesById.get(replyToId) ?? null : null;
 
@@ -186,7 +196,7 @@ export default function ChatPage() {
     setErrorMessage("");
 
     if (!user) {
-      setErrorMessage("Log in from the home page before joining the villa feed.");
+      setErrorMessage("Log in from the profile page before joining the villa feed.");
       setSending(false);
       return;
     }
@@ -224,7 +234,7 @@ export default function ChatPage() {
       return;
     }
 
-    setMessages((currentMessages) => [...currentMessages, data as FeedMessage]);
+    setMessages((currentMessages) => [data as FeedMessage, ...currentMessages]);
     setMessageDraft("");
     setReplyToId(null);
     setSending(false);
@@ -251,16 +261,51 @@ export default function ChatPage() {
 
         {!user ? (
           <section className="rounded-3xl border border-zinc-800 bg-zinc-950/90 p-8 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
-            <p className="text-zinc-300">Log in from the home page before jumping into the feed.</p>
+            <p className="text-zinc-300">Log in from the profile page before jumping into the feed.</p>
             <Link
-              href="/"
+              href="/profile"
               className="mt-4 inline-flex rounded-full bg-pink-500 px-5 py-3 text-sm font-semibold text-black transition hover:bg-pink-400"
             >
-              Back to login
+              Open profile
             </Link>
           </section>
         ) : (
           <>
+            {notificationItems.length > 0 ? (
+              <section className="rounded-3xl border border-yellow-300/20 bg-zinc-950/90 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
+                <div className="flex items-center justify-between gap-4">
+                  <h2 className="text-xl font-semibold">Latest notifications</h2>
+                  <span className="rounded-full border border-yellow-300/30 bg-yellow-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-yellow-100">
+                    Newest first
+                  </span>
+                </div>
+
+                <div className="mt-5 space-y-4">
+                  {notificationItems.map((message) => (
+                    <article
+                      key={message.id}
+                      className="rounded-3xl border border-yellow-300/30 bg-yellow-300/10 p-4"
+                    >
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex items-center gap-2">
+                          <p className="font-semibold text-zinc-100">{message.user_name}</p>
+                          <span className="rounded-full border border-yellow-300/30 bg-yellow-300/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-yellow-100">
+                            {formatNotificationLabel(message.message_type)}
+                          </span>
+                        </div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">
+                          {formatMessageTimeEST(message.created_at)}
+                        </p>
+                      </div>
+                      <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-300">
+                        {message.message}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
             <section className="rounded-3xl border border-emerald-400/20 bg-zinc-950/90 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
               <div className="flex flex-col gap-4">
                 <div>
@@ -314,16 +359,15 @@ export default function ChatPage() {
               <div className="flex items-center justify-between gap-4">
                 <h2 className="text-xl font-semibold">Villa feed</h2>
                 <span className="rounded-full border border-yellow-300/30 bg-yellow-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-yellow-100">
-                  {feedItems.length} posts
+                  {conversationItems.length} posts
                 </span>
               </div>
 
               {loading ? (
                 <p className="mt-6 text-zinc-400">Loading the villa feed...</p>
-              ) : feedItems.length > 0 ? (
+              ) : conversationItems.length > 0 ? (
                 <div className="mt-6 space-y-4">
-                  {feedItems.map((message) => {
-                    const isSystemMessage = message.message_type === "system";
+                  {conversationItems.map((message) => {
                     const replyParent =
                       message.reply_to_message_id && !message.reply_to_message_id.startsWith("episode-")
                         ? messagesById.get(message.reply_to_message_id) ?? null
@@ -333,21 +377,14 @@ export default function ChatPage() {
                       <article
                         key={message.id}
                         className={`rounded-3xl border p-4 ${
-                          isSystemMessage
-                            ? "border-yellow-300/30 bg-yellow-300/10"
-                            : message.user_id === user.id
-                              ? "border-pink-400/30 bg-pink-500/10"
-                              : "border-zinc-800 bg-zinc-900"
+                          message.user_id === user.id
+                            ? "border-pink-400/30 bg-pink-500/10"
+                            : "border-zinc-800 bg-zinc-900"
                         }`}
                       >
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                           <div className="flex items-center gap-2">
                             <p className="font-semibold text-zinc-100">{message.user_name}</p>
-                            {isSystemMessage ? (
-                              <span className="rounded-full border border-yellow-300/30 bg-yellow-300/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-yellow-100">
-                                {formatNotificationLabel(message.message_type)}
-                              </span>
-                            ) : null}
                           </div>
                           <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">
                             {formatMessageTimeEST(message.created_at)}
@@ -362,17 +399,15 @@ export default function ChatPage() {
                         <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-300">
                           {message.message}
                         </p>
-                        {!isSystemMessage ? (
-                          <div className="mt-4 flex justify-end">
-                            <button
-                              type="button"
-                              onClick={() => setReplyToId(message.id)}
-                              className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-emerald-100 transition hover:border-emerald-300 hover:bg-emerald-500/20"
-                            >
-                              Reply
-                            </button>
-                          </div>
-                        ) : null}
+                        <div className="mt-4 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => setReplyToId(message.id)}
+                            className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-emerald-100 transition hover:border-emerald-300 hover:bg-emerald-500/20"
+                          >
+                            Reply
+                          </button>
+                        </div>
                       </article>
                     );
                   })}

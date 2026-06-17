@@ -9,6 +9,13 @@ import {
   isRecouplingPrediction,
 } from "@/lib/predictionTypes";
 import {
+  buildFallbackRoundModule,
+  getRoundModuleLabel,
+  getRoundModuleSummary,
+  sortRoundModules,
+  type RoundModule,
+} from "@/lib/roundModules";
+import {
   isExactCoupleMatch,
   sharesOnePerson,
 } from "@/lib/scoring";
@@ -29,13 +36,16 @@ type Round = {
 
 type RoundBombshellRow = {
   round_id: string;
+  module_id: string | null;
   bombshell_contestant_id: string;
 };
 
 type RoundQuestion = {
   id: string;
   round_id: string;
+  module_id: string | null;
   question_text: string;
+  answer_type: string | null;
   question_order: number;
 };
 
@@ -53,6 +63,7 @@ type ScoreRow = {
 type PredictionRow = {
   user_id: string;
   round_id: string;
+  module_id?: string | null;
   prediction_role: string | null;
   bombshell_contestant_id?: string | null;
   round_question_id?: string | null;
@@ -62,16 +73,19 @@ type PredictionRow = {
 
 type ActualCouple = {
   round_id: string;
+  module_id?: string | null;
   contestant_1_id: string;
   contestant_2_id: string;
 };
 
 type RoundResult = {
   round_id: string;
+  module_id?: string | null;
   result_type: string;
   bombshell_contestant_id?: string | null;
   round_question_id?: string | null;
   contestant_id: string | null;
+  contestant_2_id?: string | null;
 };
 
 type LeaderboardEntry = {
@@ -83,7 +97,7 @@ type LeaderboardEntry = {
 type RoundResultSummary = {
   roundId: string;
   roundTitle: string;
-  predictionType: string;
+  moduleSummary: string;
   status: string;
   resultSummary: string;
   playerPredictionSummary: string;
@@ -103,17 +117,33 @@ function getContestantName(
   return contestantsById.get(contestantId) ?? "Unknown";
 }
 
-function describeRoundResults(
-  round: Round,
+function getCoupleName(
+  contestantsById: Map<string, string>,
+  contestant1Id: string | null | undefined,
+  contestant2Id: string | null | undefined,
+  fallback = "No pick"
+) {
+  if (!contestant1Id || !contestant2Id) {
+    return fallback;
+  }
+
+  return `${getContestantName(contestantsById, contestant1Id)} + ${getContestantName(
+    contestantsById,
+    contestant2Id
+  )}`;
+}
+
+function describeModuleResults(
+  module: RoundModule,
   contestantsById: Map<string, string>,
   actualCouples: ActualCouple[],
   roundResults: RoundResult[],
   roundBombshellMap: Map<string, string[]>,
-  roundQuestionsByRoundId: Map<string, RoundQuestion[]>
+  roundQuestionsByModuleId: Map<string, RoundQuestion[]>
 ) {
-  if (isRecouplingPrediction(round.prediction_type)) {
+  if (isRecouplingPrediction(module.prediction_type)) {
     const couples = actualCouples
-      .filter((couple) => couple.round_id === round.id)
+      .filter((couple) => (couple.module_id ?? module.round_id) === module.id)
       .map((couple) => {
         const firstName = contestantsById.get(couple.contestant_1_id) ?? "Unknown";
         const secondName = contestantsById.get(couple.contestant_2_id) ?? "Unknown";
@@ -123,17 +153,17 @@ function describeRoundResults(
     return couples.length > 0 ? couples.join(" • ") : "No actual couples entered yet.";
   }
 
-  if (round.prediction_type === "elimination_prediction") {
+  if (module.prediction_type === "elimination_prediction") {
     const dumpedId =
       roundResults.find(
-        (result) => result.round_id === round.id && result.result_type === "dumped_pick"
+        (result) => (result.module_id ?? module.round_id) === module.id && result.result_type === "dumped_pick"
       )?.contestant_id ?? null;
     const bottomGroupId =
       roundResults.find(
-        (result) => result.round_id === round.id && result.result_type === "bottom_group_pick"
+        (result) => (result.module_id ?? module.round_id) === module.id && result.result_type === "bottom_group_pick"
       )?.contestant_id ?? null;
     const bottomGroupNoScore = roundResults.some(
-      (result) => result.round_id === round.id && result.result_type === "bottom_group_pick_no_score"
+      (result) => (result.module_id ?? module.round_id) === module.id && result.result_type === "bottom_group_pick_no_score"
     );
 
     const dumpedName = dumpedId ? contestantsById.get(dumpedId) ?? "Unknown" : "Not set";
@@ -146,12 +176,8 @@ function describeRoundResults(
     return `Dumped: ${dumpedName} • Bottom group: ${bottomGroupName}`;
   }
 
-  if (round.prediction_type === "bombshell_arrival_prediction") {
-    const bombshellIds = roundBombshellMap.get(round.id)?.length
-      ? roundBombshellMap.get(round.id) ?? []
-      : round.bombshell_contestant_id
-        ? [round.bombshell_contestant_id]
-        : [];
+  if (module.prediction_type === "bombshell_arrival_prediction") {
+    const bombshellIds = roundBombshellMap.get(module.id) ?? [];
 
     if (bombshellIds.length === 0) {
       return "No bombshell focus set yet.";
@@ -162,7 +188,7 @@ function describeRoundResults(
         const targetId =
           roundResults.find(
             (result) =>
-              result.round_id === round.id &&
+              (result.module_id ?? module.round_id) === module.id &&
               result.result_type === "target_pick" &&
               result.bombshell_contestant_id === bombshellId
           )?.contestant_id ?? null;
@@ -174,8 +200,8 @@ function describeRoundResults(
       .join(" • ");
   }
 
-  if (isQuestionChallengePrediction(round.prediction_type)) {
-    const roundQuestions = roundQuestionsByRoundId.get(round.id) ?? [];
+  if (isQuestionChallengePrediction(module.prediction_type)) {
+    const roundQuestions = roundQuestionsByModuleId.get(module.id) ?? [];
 
     if (roundQuestions.length === 0) {
       return "No questions were set for this round.";
@@ -186,12 +212,31 @@ function describeRoundResults(
         const answerId =
           roundResults.find(
             (result) =>
-              result.round_id === round.id &&
+              (result.module_id ?? module.round_id) === module.id &&
               result.result_type === "question_pick" &&
               result.round_question_id === question.id
           )?.contestant_id ?? null;
 
-        return `Q${index + 1}: ${getContestantName(contestantsById, answerId)}`;
+        return `Q${index + 1}: ${
+          (question.answer_type ?? "islander") === "couple"
+            ? getCoupleName(
+                contestantsById,
+                roundResults.find(
+                  (result) =>
+                    (result.module_id ?? module.round_id) === module.id &&
+                    result.result_type === "question_pick" &&
+                    result.round_question_id === question.id
+                )?.contestant_id ?? null,
+                roundResults.find(
+                  (result) =>
+                    (result.module_id ?? module.round_id) === module.id &&
+                    result.result_type === "question_pick" &&
+                    result.round_question_id === question.id
+                )?.contestant_2_id ?? null,
+                "Not set"
+              )
+            : getContestantName(contestantsById, answerId)
+        }`;
       })
       .join(" • ");
   }
@@ -199,16 +244,17 @@ function describeRoundResults(
   return "No results summary for this round type.";
 }
 
-function describePlayerPredictions(
-  round: Round,
+function describeModulePredictions(
+  module: RoundModule,
   contestantsById: Map<string, string>,
   predictions: PredictionRow[],
   roundBombshellMap: Map<string, string[]>,
-  roundQuestionsByRoundId: Map<string, RoundQuestion[]>
+  roundQuestionsByModuleId: Map<string, RoundQuestion[]>
 ) {
-  if (isRecouplingPrediction(round.prediction_type)) {
+  if (isRecouplingPrediction(module.prediction_type)) {
     const couplePredictions = predictions.filter(
       (prediction) =>
+        (prediction.module_id ?? module.round_id) === module.id &&
         (prediction.prediction_role === "couple_pick" || prediction.prediction_role == null) &&
         prediction.contestant_1_id &&
         prediction.contestant_2_id
@@ -229,10 +275,16 @@ function describePlayerPredictions(
       .join(" • ");
   }
 
-  if (round.prediction_type === "elimination_prediction") {
-    const dumpedPick = predictions.find((prediction) => prediction.prediction_role === "dumped_pick");
+  if (module.prediction_type === "elimination_prediction") {
+    const dumpedPick = predictions.find(
+      (prediction) =>
+        (prediction.module_id ?? module.round_id) === module.id &&
+        prediction.prediction_role === "dumped_pick"
+    );
     const bottomGroupPick = predictions.find(
-      (prediction) => prediction.prediction_role === "bottom_group_pick"
+      (prediction) =>
+        (prediction.module_id ?? module.round_id) === module.id &&
+        prediction.prediction_role === "bottom_group_pick"
     );
 
     return [
@@ -245,12 +297,8 @@ function describePlayerPredictions(
     ].join(" • ");
   }
 
-  if (round.prediction_type === "bombshell_arrival_prediction") {
-    const bombshellIds = roundBombshellMap.get(round.id)?.length
-      ? roundBombshellMap.get(round.id) ?? []
-      : round.bombshell_contestant_id
-        ? [round.bombshell_contestant_id]
-        : [];
+  if (module.prediction_type === "bombshell_arrival_prediction") {
+    const bombshellIds = roundBombshellMap.get(module.id) ?? [];
 
     if (bombshellIds.length === 0) {
       return "No bombshells set for this round.";
@@ -260,6 +308,7 @@ function describePlayerPredictions(
       .map((bombshellId) => {
         const prediction = predictions.find(
           (row) =>
+            (row.module_id ?? module.round_id) === module.id &&
             row.prediction_role === "target_pick" && row.bombshell_contestant_id === bombshellId
         );
 
@@ -272,8 +321,8 @@ function describePlayerPredictions(
       .join(" • ");
   }
 
-  if (isQuestionChallengePrediction(round.prediction_type)) {
-    const roundQuestions = roundQuestionsByRoundId.get(round.id) ?? [];
+  if (isQuestionChallengePrediction(module.prediction_type)) {
+    const roundQuestions = roundQuestionsByModuleId.get(module.id) ?? [];
 
     if (roundQuestions.length === 0) {
       return "No questions were set for this round.";
@@ -283,14 +332,20 @@ function describePlayerPredictions(
       .map((question, index) => {
         const prediction = predictions.find(
           (row) =>
+            (row.module_id ?? module.round_id) === module.id &&
             row.prediction_role === "question_pick" && row.round_question_id === question.id
         );
 
-        return `Q${index + 1}: ${getContestantName(
-          contestantsById,
-          prediction?.contestant_1_id,
-          "No pick"
-        )}`;
+        return `Q${index + 1}: ${
+          (question.answer_type ?? "islander") === "couple"
+            ? getCoupleName(
+                contestantsById,
+                prediction?.contestant_1_id,
+                prediction?.contestant_2_id,
+                "No pick"
+              )
+            : getContestantName(contestantsById, prediction?.contestant_1_id, "No pick")
+        }`;
       })
       .join(" • ");
   }
@@ -298,18 +353,19 @@ function describePlayerPredictions(
   return "No prediction required.";
 }
 
-function buildScoreBreakdown(
-  round: Round,
+function buildModuleScoreBreakdown(
+  module: RoundModule,
   contestantsById: Map<string, string>,
   predictions: PredictionRow[],
   actualCouples: ActualCouple[],
   roundResults: RoundResult[],
   roundBombshellMap: Map<string, string[]>,
-  roundQuestionsByRoundId: Map<string, RoundQuestion[]>
+  roundQuestionsByModuleId: Map<string, RoundQuestion[]>
 ) {
-  if (isRecouplingPrediction(round.prediction_type)) {
+  if (isRecouplingPrediction(module.prediction_type)) {
     const couplePredictions = predictions.filter(
       (prediction) =>
+        (prediction.module_id ?? module.round_id) === module.id &&
         (prediction.prediction_role === "couple_pick" || prediction.prediction_role == null) &&
         prediction.contestant_1_id &&
         prediction.contestant_2_id
@@ -319,7 +375,7 @@ function buildScoreBreakdown(
       return ["No couples saved for this round."];
     }
 
-    if (!actualCouples.some((couple) => couple.round_id === round.id)) {
+    if (!actualCouples.some((couple) => (couple.module_id ?? module.round_id) === module.id)) {
       return ["Waiting for actual couples to be entered."];
     }
 
@@ -329,7 +385,9 @@ function buildScoreBreakdown(
         prediction.contestant_1_id
       )} + ${getContestantName(contestantsById, prediction.contestant_2_id)}`;
 
-      const roundActualCouples = actualCouples.filter((couple) => couple.round_id === round.id);
+      const roundActualCouples = actualCouples.filter(
+        (couple) => (couple.module_id ?? module.round_id) === module.id
+      );
       const exactMatch = roundActualCouples.some((actualCouple) =>
         isExactCoupleMatch(
           {
@@ -362,19 +420,25 @@ function buildScoreBreakdown(
     });
   }
 
-  if (round.prediction_type === "elimination_prediction") {
+  if (module.prediction_type === "elimination_prediction") {
     const dumpedActual = roundResults.find(
-      (result) => result.round_id === round.id && result.result_type === "dumped_pick"
+      (result) => (result.module_id ?? module.round_id) === module.id && result.result_type === "dumped_pick"
     );
     const bottomGroupActual = roundResults.find(
-      (result) => result.round_id === round.id && result.result_type === "bottom_group_pick"
+      (result) => (result.module_id ?? module.round_id) === module.id && result.result_type === "bottom_group_pick"
     );
     const bottomGroupNoScore = roundResults.some(
-      (result) => result.round_id === round.id && result.result_type === "bottom_group_pick_no_score"
+      (result) => (result.module_id ?? module.round_id) === module.id && result.result_type === "bottom_group_pick_no_score"
     );
-    const dumpedPrediction = predictions.find((prediction) => prediction.prediction_role === "dumped_pick");
+    const dumpedPrediction = predictions.find(
+      (prediction) =>
+        (prediction.module_id ?? module.round_id) === module.id &&
+        prediction.prediction_role === "dumped_pick"
+    );
     const bottomGroupPrediction = predictions.find(
-      (prediction) => prediction.prediction_role === "bottom_group_pick"
+      (prediction) =>
+        (prediction.module_id ?? module.round_id) === module.id &&
+        prediction.prediction_role === "bottom_group_pick"
     );
 
     if (!dumpedActual) {
@@ -397,12 +461,8 @@ function buildScoreBreakdown(
     ];
   }
 
-  if (round.prediction_type === "bombshell_arrival_prediction") {
-    const bombshellIds = roundBombshellMap.get(round.id)?.length
-      ? roundBombshellMap.get(round.id) ?? []
-      : round.bombshell_contestant_id
-        ? [round.bombshell_contestant_id]
-        : [];
+  if (module.prediction_type === "bombshell_arrival_prediction") {
+    const bombshellIds = roundBombshellMap.get(module.id) ?? [];
 
     if (bombshellIds.length === 0) {
       return ["No bombshells set for this round."];
@@ -412,11 +472,12 @@ function buildScoreBreakdown(
       const bombshellName = getContestantName(contestantsById, bombshellId);
       const prediction = predictions.find(
         (row) =>
+          (row.module_id ?? module.round_id) === module.id &&
           row.prediction_role === "target_pick" && row.bombshell_contestant_id === bombshellId
       );
       const actual = roundResults.find(
         (result) =>
-          result.round_id === round.id &&
+          (result.module_id ?? module.round_id) === module.id &&
           result.result_type === "target_pick" &&
           result.bombshell_contestant_id === bombshellId
       );
@@ -435,8 +496,8 @@ function buildScoreBreakdown(
     });
   }
 
-  if (isQuestionChallengePrediction(round.prediction_type)) {
-    const roundQuestions = roundQuestionsByRoundId.get(round.id) ?? [];
+  if (isQuestionChallengePrediction(module.prediction_type)) {
+    const roundQuestions = roundQuestionsByModuleId.get(module.id) ?? [];
 
     if (roundQuestions.length === 0) {
       return ["No questions were set for this round."];
@@ -444,11 +505,14 @@ function buildScoreBreakdown(
 
     return roundQuestions.map((question, index) => {
       const prediction = predictions.find(
-        (row) => row.prediction_role === "question_pick" && row.round_question_id === question.id
+        (row) =>
+          (row.module_id ?? module.round_id) === module.id &&
+          row.prediction_role === "question_pick" &&
+          row.round_question_id === question.id
       );
       const actual = roundResults.find(
         (result) =>
-          result.round_id === round.id &&
+          (result.module_id ?? module.round_id) === module.id &&
           result.result_type === "question_pick" &&
           result.round_question_id === question.id
       );
@@ -461,13 +525,84 @@ function buildScoreBreakdown(
         return `Q${index + 1} (${question.question_text}): no pick saved (+0)`;
       }
 
-      return prediction.contestant_1_id === actual.contestant_id
+      const isCoupleAnswer = (question.answer_type ?? "islander") === "couple";
+      const isCorrect = isCoupleAnswer
+        ? !!prediction.contestant_1_id &&
+          !!prediction.contestant_2_id &&
+          !!actual.contestant_id &&
+          !!actual.contestant_2_id &&
+          [prediction.contestant_1_id, prediction.contestant_2_id].sort().join(":") ===
+            [actual.contestant_id, actual.contestant_2_id].sort().join(":")
+        : prediction.contestant_1_id === actual.contestant_id;
+
+      return isCorrect
         ? `Q${index + 1} (${question.question_text}): correct (+4)`
         : `Q${index + 1} (${question.question_text}): incorrect (+0)`;
     });
   }
 
   return ["This round did not use a scored prediction flow."];
+}
+
+function describeRoundResults(
+  modules: RoundModule[],
+  contestantsById: Map<string, string>,
+  actualCouples: ActualCouple[],
+  roundResults: RoundResult[],
+  roundBombshellMap: Map<string, string[]>,
+  roundQuestionsByModuleId: Map<string, RoundQuestion[]>
+) {
+  return modules
+    .map((module) => `${getRoundModuleLabel(module)}: ${describeModuleResults(
+      module,
+      contestantsById,
+      actualCouples,
+      roundResults,
+      roundBombshellMap,
+      roundQuestionsByModuleId
+    )}`)
+    .join(" || ");
+}
+
+function describePlayerPredictions(
+  modules: RoundModule[],
+  contestantsById: Map<string, string>,
+  predictions: PredictionRow[],
+  roundBombshellMap: Map<string, string[]>,
+  roundQuestionsByModuleId: Map<string, RoundQuestion[]>
+) {
+  return modules
+    .map((module) => `${getRoundModuleLabel(module)}: ${describeModulePredictions(
+      module,
+      contestantsById,
+      predictions,
+      roundBombshellMap,
+      roundQuestionsByModuleId
+    )}`)
+    .join(" || ");
+}
+
+function buildScoreBreakdown(
+  modules: RoundModule[],
+  contestantsById: Map<string, string>,
+  predictions: PredictionRow[],
+  actualCouples: ActualCouple[],
+  roundResults: RoundResult[],
+  roundBombshellMap: Map<string, string[]>,
+  roundQuestionsByModuleId: Map<string, RoundQuestion[]>
+) {
+  return modules.flatMap((module) => [
+    `${getRoundModuleLabel(module)}`,
+    ...buildModuleScoreBreakdown(
+      module,
+      contestantsById,
+      predictions,
+      actualCouples,
+      roundResults,
+      roundBombshellMap,
+      roundQuestionsByModuleId
+    ).map((line) => `- ${line}`),
+  ]);
 }
 
 export default function LeaderboardPage() {
@@ -488,6 +623,7 @@ export default function LeaderboardPage() {
         { data: scoreData, error: scoreError },
         { data: userData, error: userError },
         { data: roundData, error: roundError },
+        { data: moduleData, error: moduleError },
         { data: roundBombshellData, error: roundBombshellError },
         { data: roundQuestionData, error: roundQuestionError },
         { data: contestantData, error: contestantError },
@@ -505,25 +641,30 @@ export default function LeaderboardPage() {
           .select("id, title, prediction_type, bombshell_contestant_id, status")
           .order("created_at", { ascending: false }),
         supabase
+          .from("round_prediction_modules")
+          .select("id, round_id, prediction_type, title, sort_order, created_at")
+          .order("sort_order")
+          .order("created_at"),
+        supabase
           .from("round_bombshells")
-          .select("round_id, bombshell_contestant_id"),
+          .select("round_id, module_id, bombshell_contestant_id"),
         supabase
           .from("round_questions")
-          .select("id, round_id, question_text, question_order")
+          .select("id, round_id, module_id, question_text, answer_type, question_order")
           .order("question_order")
           .order("created_at"),
         supabase.from("contestants").select("id, name").order("name"),
         supabase
           .from("actual_couples")
-          .select("round_id, contestant_1_id, contestant_2_id"),
+          .select("round_id, module_id, contestant_1_id, contestant_2_id"),
         supabase
           .from("round_results")
-          .select("round_id, result_type, contestant_id, bombshell_contestant_id, round_question_id"),
+          .select("round_id, module_id, result_type, contestant_id, contestant_2_id, bombshell_contestant_id, round_question_id"),
         storedUser
           ? supabase
               .from("predictions")
               .select(
-                "user_id, round_id, prediction_role, bombshell_contestant_id, round_question_id, contestant_1_id, contestant_2_id"
+                "user_id, round_id, module_id, prediction_role, bombshell_contestant_id, round_question_id, contestant_1_id, contestant_2_id"
               )
               .eq("user_id", storedUser.id)
           : Promise.resolve({ data: [], error: null }),
@@ -533,6 +674,7 @@ export default function LeaderboardPage() {
         scoreError ||
         userError ||
         roundError ||
+        moduleError ||
         roundBombshellError ||
         roundQuestionError ||
         contestantError ||
@@ -544,6 +686,7 @@ export default function LeaderboardPage() {
           scoreError?.message ??
             userError?.message ??
             roundError?.message ??
+            moduleError?.message ??
             roundBombshellError?.message ??
             roundQuestionError?.message ??
             contestantError?.message ??
@@ -569,18 +712,27 @@ export default function LeaderboardPage() {
       const contestantsById = new Map(
         ((contestantData ?? []) as Contestant[]).map((contestant) => [contestant.id, contestant.name])
       );
+      const roundModulesMap = ((moduleData ?? []) as RoundModule[]).reduce<Map<string, RoundModule[]>>(
+        (map, module) => {
+          map.set(module.round_id, sortRoundModules([...(map.get(module.round_id) ?? []), module]));
+          return map;
+        },
+        new Map()
+      );
       const roundBombshellMap = ((roundBombshellData ?? []) as RoundBombshellRow[]).reduce<
         Map<string, string[]>
       >((map, row) => {
-        map.set(row.round_id, [...(map.get(row.round_id) ?? []), row.bombshell_contestant_id]);
+        const key = row.module_id ?? row.round_id;
+        map.set(key, [...(map.get(key) ?? []), row.bombshell_contestant_id]);
         return map;
       }, new Map());
-      const roundQuestionsByRoundId = ((roundQuestionData ?? []) as RoundQuestion[]).reduce<
+      const roundQuestionsByModuleId = ((roundQuestionData ?? []) as RoundQuestion[]).reduce<
         Map<string, RoundQuestion[]>
       >((map, row) => {
+        const key = row.module_id ?? row.round_id;
         map.set(
-          row.round_id,
-          [...(map.get(row.round_id) ?? []), row].sort(
+          key,
+          [...(map.get(key) ?? []), row].sort(
             (left, right) => left.question_order - right.question_order
           )
         );
@@ -604,6 +756,9 @@ export default function LeaderboardPage() {
       }, new Map());
 
       const nextRoundResultSummaries = ((roundData ?? []) as Round[]).map((round) => {
+        const roundModules = roundModulesMap.get(round.id)?.length
+          ? roundModulesMap.get(round.id) ?? []
+          : [buildFallbackRoundModule(round)];
         const roundPredictions = ((predictionData ?? []) as PredictionRow[]).filter(
           (prediction) => prediction.round_id === round.id
         );
@@ -611,31 +766,31 @@ export default function LeaderboardPage() {
         return {
           roundId: round.id,
           roundTitle: round.title,
-          predictionType: round.prediction_type,
+          moduleSummary: getRoundModuleSummary(roundModules),
           status: round.status,
           resultSummary: describeRoundResults(
-            round,
+            roundModules,
             contestantsById,
             (actualCoupleData ?? []) as ActualCouple[],
             (roundResultsData ?? []) as RoundResult[],
             roundBombshellMap,
-            roundQuestionsByRoundId
+            roundQuestionsByModuleId
           ),
           playerPredictionSummary: describePlayerPredictions(
-            round,
+            roundModules,
             contestantsById,
             roundPredictions,
             roundBombshellMap,
-            roundQuestionsByRoundId
+            roundQuestionsByModuleId
           ),
           scoreBreakdown: buildScoreBreakdown(
-            round,
+            roundModules,
             contestantsById,
             roundPredictions,
             (actualCoupleData ?? []) as ActualCouple[],
             (roundResultsData ?? []) as RoundResult[],
             roundBombshellMap,
-            roundQuestionsByRoundId
+            roundQuestionsByModuleId
           ),
           playerPoints: pointsByRound.get(round.id) ?? 0,
         };
@@ -761,7 +916,7 @@ export default function LeaderboardPage() {
                       <div>
                         <p className="font-semibold text-zinc-100">{summary.roundTitle}</p>
                         <p className="text-sm text-zinc-400">
-                          {getPredictionTypeLabel(summary.predictionType)} • {summary.status}
+                          {summary.moduleSummary} • {summary.status}
                         </p>
                       </div>
                       <div className="rounded-full border border-yellow-300/30 bg-yellow-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-yellow-100">

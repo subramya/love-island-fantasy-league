@@ -1,8 +1,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
+  isNoScoreEpisode,
   isQuestionChallengePrediction,
   isRecouplingPrediction,
 } from "@/lib/predictionTypes";
+import {
+  getRoundModuleLabel,
+  sortRoundModules,
+  type RoundModule,
+} from "@/lib/roundModules";
 
 type CoupleRow = {
   contestant_1_id: string;
@@ -13,6 +19,7 @@ type PredictionRow = {
   bombshell_contestant_id?: string | null;
   contestant_1_id: string;
   contestant_2_id?: string | null;
+  module_id?: string | null;
   prediction_role?: string | null;
   round_question_id?: string | null;
   user_id: string;
@@ -20,9 +27,15 @@ type PredictionRow = {
 
 type RoundResultRow = {
   bombshell_contestant_id?: string | null;
+  module_id?: string | null;
   round_question_id?: string | null;
   result_type: string;
   contestant_id: string | null;
+  contestant_2_id?: string | null;
+};
+
+type ActualCoupleRow = CoupleRow & {
+  module_id?: string | null;
 };
 
 type ScoreSummary = {
@@ -174,7 +187,12 @@ export function calculateQuestionChallengeScores(
       result.round_question_id &&
       result.contestant_id
     ) {
-      resultsByQuestion.set(result.round_question_id, result.contestant_id);
+      resultsByQuestion.set(
+        result.round_question_id,
+        result.contestant_2_id
+          ? [result.contestant_id, result.contestant_2_id].sort().join(":")
+          : result.contestant_id
+      );
     }
   });
 
@@ -182,7 +200,12 @@ export function calculateQuestionChallengeScores(
     if (
       prediction.prediction_role === "question_pick" &&
       prediction.round_question_id &&
-      prediction.contestant_1_id === resultsByQuestion.get(prediction.round_question_id)
+      !!prediction.contestant_1_id &&
+      (
+        prediction.contestant_2_id
+          ? [prediction.contestant_1_id, prediction.contestant_2_id].sort().join(":")
+          : prediction.contestant_1_id
+      ) === resultsByQuestion.get(prediction.round_question_id)
     ) {
       addPoints(totals, prediction.user_id, 4);
     }
@@ -192,17 +215,41 @@ export function calculateQuestionChallengeScores(
 }
 
 export async function runRoundScoring(supabase: SupabaseClient, roundId: string) {
-  const { data: roundData, error: roundError } = await supabase
-    .from("rounds")
-    .select("prediction_type")
-    .eq("id", roundId)
-    .single();
+  const [
+    { data: roundData, error: roundError },
+    { data: moduleData, error: moduleError },
+  ] = await Promise.all([
+    supabase.from("rounds").select("prediction_type").eq("id", roundId).single(),
+    supabase
+      .from("round_prediction_modules")
+      .select("id, round_id, prediction_type, title, sort_order, created_at")
+      .eq("round_id", roundId)
+      .order("sort_order")
+      .order("created_at"),
+  ]);
 
   if (roundError) {
     throw new Error(roundError.message);
   }
 
-  const predictionType = roundData.prediction_type;
+  if (moduleError) {
+    throw new Error(moduleError.message);
+  }
+
+  const modules =
+    (moduleData?.length
+      ? sortRoundModules(moduleData as RoundModule[])
+      : [
+          {
+            id: `legacy-${roundId}`,
+            round_id: roundId,
+            prediction_type: roundData.prediction_type,
+            title: null,
+            sort_order: 1,
+            created_at: new Date(0).toISOString(),
+          },
+        ]) as RoundModule[];
+  const hasRealModules = (moduleData?.length ?? 0) > 0;
 
   const { error: deleteError } = await supabase.from("scores").delete().eq("round_id", roundId);
 
@@ -210,142 +257,112 @@ export async function runRoundScoring(supabase: SupabaseClient, roundId: string)
     throw new Error(deleteError.message);
   }
 
-  let scoreRows: ScoreSummary[] = [];
+  const [
+    { data: predictions, error: predictionsError },
+    { data: actualCouples, error: actualCouplesError },
+    { data: roundResults, error: roundResultsError },
+  ] = await Promise.all([
+    supabase
+      .from("predictions")
+      .select(
+        "user_id, contestant_1_id, contestant_2_id, prediction_role, bombshell_contestant_id, round_question_id, module_id"
+      )
+      .eq("round_id", roundId),
+    supabase
+      .from("actual_couples")
+      .select("contestant_1_id, contestant_2_id, module_id")
+      .eq("round_id", roundId),
+    supabase
+      .from("round_results")
+      .select("result_type, contestant_id, contestant_2_id, bombshell_contestant_id, round_question_id, module_id")
+      .eq("round_id", roundId),
+  ]);
 
-  if (isRecouplingPrediction(predictionType)) {
-    const [
-      { data: predictions, error: predictionsError },
-      { data: actualCouples, error: actualCouplesError },
-    ] = await Promise.all([
-      supabase
-        .from("predictions")
-        .select("user_id, contestant_1_id, contestant_2_id, prediction_role")
-        .eq("round_id", roundId),
-      supabase
-        .from("actual_couples")
-        .select("contestant_1_id, contestant_2_id")
-        .eq("round_id", roundId),
-    ]);
+  if (predictionsError) {
+    throw new Error(predictionsError.message);
+  }
 
-    if (predictionsError) {
-      throw new Error(predictionsError.message);
+  if (actualCouplesError) {
+    throw new Error(actualCouplesError.message);
+  }
+
+  if (roundResultsError) {
+    throw new Error(roundResultsError.message);
+  }
+
+  const allPredictions = (predictions ?? []) as PredictionRow[];
+  const allActualCouples = (actualCouples ?? []) as ActualCoupleRow[];
+  const allRoundResults = (roundResults ?? []) as RoundResultRow[];
+  const totals = new Map<string, number>();
+  const belongsToModule = <T extends { module_id?: string | null }>(row: T, moduleId: string) =>
+    hasRealModules ? row.module_id === moduleId : true;
+
+  for (const module of modules) {
+    if (isNoScoreEpisode(module.prediction_type)) {
+      continue;
     }
 
-    if (actualCouplesError) {
-      throw new Error(actualCouplesError.message);
-    }
+    const moduleLabel = getRoundModuleLabel(module);
+    let moduleScores: ScoreSummary[] = [];
 
-    if (!actualCouples || actualCouples.length === 0) {
-      throw new Error("Add actual couples before running scoring.");
-    }
-
-    scoreRows = calculateRecouplingScores(
-      ((predictions ?? []) as PredictionRow[]).filter(
+    if (isRecouplingPrediction(module.prediction_type)) {
+      const modulePredictions = allPredictions.filter(
         (prediction) =>
+          belongsToModule(prediction, module.id) &&
           (prediction.prediction_role === "couple_pick" || prediction.prediction_role == null) &&
           prediction.contestant_1_id &&
           prediction.contestant_2_id
-      ),
-      actualCouples as CoupleRow[]
-    );
-  } else if (predictionType === "elimination_prediction") {
-    const [
-      { data: predictions, error: predictionsError },
-      { data: roundResults, error: roundResultsError },
-    ] = await Promise.all([
-      supabase
-        .from("predictions")
-        .select("user_id, contestant_1_id, prediction_role, bombshell_contestant_id")
-        .eq("round_id", roundId),
-      supabase
-        .from("round_results")
-        .select("result_type, contestant_id, bombshell_contestant_id")
-        .eq("round_id", roundId),
-    ]);
+      );
+      const moduleActualCouples = allActualCouples.filter((couple) =>
+        belongsToModule(couple, module.id)
+      );
 
-    if (predictionsError) {
-      throw new Error(predictionsError.message);
+      if (moduleActualCouples.length === 0) {
+        throw new Error(`Add actual couples for ${moduleLabel} before running scoring.`);
+      }
+
+      moduleScores = calculateRecouplingScores(modulePredictions, moduleActualCouples);
+    } else if (module.prediction_type === "elimination_prediction") {
+      const modulePredictions = allPredictions.filter((prediction) =>
+        belongsToModule(prediction, module.id)
+      );
+      const moduleResults = allRoundResults.filter((result) => belongsToModule(result, module.id));
+
+      if (!moduleResults.some((result) => result.result_type === "dumped_pick")) {
+        throw new Error(`Add the dumped islander for ${moduleLabel} before running scoring.`);
+      }
+
+      moduleScores = calculateEliminationScores(modulePredictions, moduleResults);
+    } else if (module.prediction_type === "bombshell_arrival_prediction") {
+      const modulePredictions = allPredictions.filter((prediction) =>
+        belongsToModule(prediction, module.id)
+      );
+      const moduleResults = allRoundResults.filter((result) => belongsToModule(result, module.id));
+
+      if (!moduleResults.some((result) => result.result_type === "target_pick")) {
+        throw new Error(`Add at least one bombshell target for ${moduleLabel} before running scoring.`);
+      }
+
+      moduleScores = calculateBombshellScores(modulePredictions, moduleResults);
+    } else if (isQuestionChallengePrediction(module.prediction_type)) {
+      const modulePredictions = allPredictions.filter((prediction) =>
+        belongsToModule(prediction, module.id)
+      );
+      const moduleResults = allRoundResults.filter((result) => belongsToModule(result, module.id));
+
+      if (!moduleResults.some((result) => result.result_type === "question_pick")) {
+        throw new Error(`Add the correct answers for ${moduleLabel} before running scoring.`);
+      }
+
+      moduleScores = calculateQuestionChallengeScores(modulePredictions, moduleResults);
+    } else {
+      throw new Error(`Scoring is not enabled for ${moduleLabel}.`);
     }
 
-    if (roundResultsError) {
-      throw new Error(roundResultsError.message);
-    }
-
-    if (!(roundResults ?? []).some((result) => result.result_type === "dumped_pick")) {
-      throw new Error("Add the actual dumped islander before running elimination scoring.");
-    }
-
-    scoreRows = calculateEliminationScores(
-      (predictions ?? []) as PredictionRow[],
-      (roundResults ?? []) as RoundResultRow[]
-    );
-  } else if (predictionType === "bombshell_arrival_prediction") {
-    const [
-      { data: predictions, error: predictionsError },
-      { data: roundResults, error: roundResultsError },
-    ] = await Promise.all([
-      supabase
-        .from("predictions")
-        .select("user_id, contestant_1_id, prediction_role, bombshell_contestant_id")
-        .eq("round_id", roundId),
-      supabase
-        .from("round_results")
-        .select("result_type, contestant_id, bombshell_contestant_id")
-        .eq("round_id", roundId),
-    ]);
-
-    if (predictionsError) {
-      throw new Error(predictionsError.message);
-    }
-
-    if (roundResultsError) {
-      throw new Error(roundResultsError.message);
-    }
-
-    if (!(roundResults ?? []).some((result) => result.result_type === "target_pick")) {
-      throw new Error("Add at least one actual bombshell target before running scoring.");
-    }
-
-    scoreRows = calculateBombshellScores(
-      (predictions ?? []) as PredictionRow[],
-      (roundResults ?? []) as RoundResultRow[]
-    );
-  } else if (isQuestionChallengePrediction(predictionType)) {
-    const [
-      { data: predictions, error: predictionsError },
-      { data: roundResults, error: roundResultsError },
-    ] = await Promise.all([
-      supabase
-        .from("predictions")
-        .select(
-          "user_id, contestant_1_id, prediction_role, bombshell_contestant_id, round_question_id"
-        )
-        .eq("round_id", roundId),
-      supabase
-        .from("round_results")
-        .select("result_type, contestant_id, bombshell_contestant_id, round_question_id")
-        .eq("round_id", roundId),
-    ]);
-
-    if (predictionsError) {
-      throw new Error(predictionsError.message);
-    }
-
-    if (roundResultsError) {
-      throw new Error(roundResultsError.message);
-    }
-
-    if (!(roundResults ?? []).some((result) => result.result_type === "question_pick")) {
-      throw new Error("Add the actual question answers before running scoring.");
-    }
-
-    scoreRows = calculateQuestionChallengeScores(
-      (predictions ?? []) as PredictionRow[],
-      (roundResults ?? []) as RoundResultRow[]
-    );
-  } else {
-    throw new Error("Scoring is not enabled for this round type.");
+    moduleScores.forEach((scoreRow) => addPoints(totals, scoreRow.user_id, scoreRow.points));
   }
+
+  const scoreRows = Array.from(totals.entries()).map(([user_id, points]) => ({ user_id, points }));
 
   if (scoreRows.length === 0) {
     return { scoreRows: [] as ScoreSummary[] };

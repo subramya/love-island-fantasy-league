@@ -9,7 +9,7 @@ import {
   getContestantTypeStyles,
 } from "@/lib/contestantTypes";
 import { getStoredLeagueUser, type LeagueUser } from "@/lib/leagueUser";
-import { getPredictionTypeLabel } from "@/lib/predictionTypes";
+import { buildFallbackRoundModule, getRoundModuleSummary, sortRoundModules, type RoundModule } from "@/lib/roundModules";
 import { supabase } from "@/lib/supabaseClient";
 
 type Contestant = {
@@ -31,6 +31,7 @@ export default function DashboardPage() {
   const [user, setUser] = useState<LeagueUser | null>(null);
   const [contestants, setContestants] = useState<Contestant[]>([]);
   const [openRound, setOpenRound] = useState<Round | null>(null);
+  const [openRoundModules, setOpenRoundModules] = useState<RoundModule[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -52,11 +53,12 @@ export default function DashboardPage() {
       const [
         { data: contestantsData, error: contestantsError },
         { data: roundData, error: roundError },
+        { data: moduleData, error: moduleError },
+        { data: roundResultsData, error: roundResultsError },
       ] = await Promise.all([
         supabase
           .from("contestants")
           .select("id, name, status, contestant_type, image_url")
-          .eq("status", "active")
           .order("name"),
         supabase
           .from("rounds")
@@ -65,13 +67,50 @@ export default function DashboardPage() {
           .order("created_at", { ascending: false })
           .limit(1)
           .maybeSingle(),
+        supabase
+          .from("round_prediction_modules")
+          .select("id, round_id, prediction_type, title, sort_order, created_at")
+          .order("sort_order")
+          .order("created_at"),
+        supabase
+          .from("round_results")
+          .select("contestant_id, result_type"),
       ]);
 
-      if (contestantsError || roundError) {
-        setErrorMessage(contestantsError?.message ?? roundError?.message ?? "Unable to load dashboard.");
+      if (contestantsError || roundError || moduleError || roundResultsError) {
+        setErrorMessage(
+          contestantsError?.message ??
+            roundError?.message ??
+            moduleError?.message ??
+            roundResultsError?.message ??
+            "Unable to load dashboard."
+        );
       } else {
-        setContestants((contestantsData ?? []) as Contestant[]);
-        setOpenRound((roundData ?? null) as Round | null);
+        const nextDumpedContestantIds = Array.from(
+          new Set(
+            ((roundResultsData ?? []) as Array<{ contestant_id: string | null; result_type: string }>)
+              .filter((result) => result.result_type === "dumped_pick" && result.contestant_id)
+              .map((result) => result.contestant_id as string)
+          )
+        );
+        setContestants(
+          ((contestantsData ?? []) as Contestant[]).filter(
+            (contestant) =>
+              contestant.status === "active" && !nextDumpedContestantIds.includes(contestant.id)
+          )
+        );
+        const nextRound = (roundData ?? null) as Round | null;
+        setOpenRound(nextRound);
+        const modules = ((moduleData ?? []) as RoundModule[]).filter(
+          (module) => module.round_id === nextRound?.id
+        );
+        setOpenRoundModules(
+          nextRound
+            ? modules.length > 0
+              ? sortRoundModules(modules)
+              : [buildFallbackRoundModule(nextRound)]
+            : []
+        );
       }
 
       setLoading(false);
@@ -137,8 +176,8 @@ export default function DashboardPage() {
                     <span className="font-semibold">Title:</span> {openRound.title}
                   </p>
                   <p>
-                    <span className="font-semibold">Prediction type:</span>{" "}
-                    {getPredictionTypeLabel(openRound.prediction_type)}
+                    <span className="font-semibold">Prediction modules:</span>{" "}
+                    {getRoundModuleSummary(openRoundModules)}
                   </p>
                   <p>
                     <span className="font-semibold">Status:</span> {openRound.status}

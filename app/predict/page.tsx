@@ -2,7 +2,12 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  buildCurrentCoupleOptions,
+  parseCoupleValue,
+  type CurrentCoupleOption,
+} from "@/lib/currentCouples";
 import { getStoredLeagueUser, type LeagueUser } from "@/lib/leagueUser";
 import {
   getPredictionTypeDescription,
@@ -11,6 +16,14 @@ import {
   isQuestionChallengePrediction,
   isRecouplingPrediction,
 } from "@/lib/predictionTypes";
+import {
+  buildFallbackRoundModule,
+  getRoundModuleDescription,
+  getRoundModuleLabel,
+  getRoundModuleSummary,
+  sortRoundModules,
+  type RoundModule,
+} from "@/lib/roundModules";
 import { supabase } from "@/lib/supabaseClient";
 
 type Contestant = {
@@ -26,18 +39,35 @@ type Round = {
   prediction_type: string;
   bombshell_contestant_id: string | null;
   status: string;
+  created_at?: string;
+};
+
+type RoundForHistory = {
+  id: string;
+  title: string;
+  created_at?: string;
 };
 
 type RoundBombshellRow = {
   round_id: string;
+  module_id: string | null;
   bombshell_contestant_id: string;
 };
 
 type RoundQuestion = {
   id: string;
   round_id: string;
+  module_id: string | null;
   question_text: string;
+  answer_type: string | null;
   question_order: number;
+};
+
+type RoundTrackerEntry = {
+  round_id: string;
+  contestant_id: string;
+  tracker_state: string;
+  partner_contestant_id: string | null;
 };
 
 type PredictionFormRow = {
@@ -51,6 +81,7 @@ type StoredPrediction = {
   bombshell_contestant_id?: string | null;
   contestant_1_id: string | null;
   contestant_2_id: string | null;
+  module_id?: string | null;
   prediction_role: string | null;
   round_question_id?: string | null;
 };
@@ -79,109 +110,140 @@ function getContestantName(contestants: Contestant[], contestantId: string) {
   return contestants.find((contestant) => contestant.id === contestantId)?.name ?? "Not picked yet";
 }
 
+function getCoupleName(
+  contestants: Contestant[],
+  contestant1Id: string | null | undefined,
+  contestant2Id: string | null | undefined
+) {
+  if (!contestant1Id || !contestant2Id) {
+    return "No pick";
+  }
+
+  return `${getContestantName(contestants, contestant1Id)} + ${getContestantName(
+    contestants,
+    contestant2Id
+  )}`;
+}
+
 function getBombshellIdsForRound(
-  round: Round | null,
+  module: RoundModule | null,
   roundBombshellMap: Record<string, string[]>
 ) {
-  if (!round) {
+  if (!module) {
     return [];
   }
 
-  if (roundBombshellMap[round.id]?.length) {
-    return roundBombshellMap[round.id];
-  }
-
-  return round.bombshell_contestant_id ? [round.bombshell_contestant_id] : [];
+  return roundBombshellMap[module.id] ?? [];
 }
 
 function formatSavedPredictionSummary(
-  round: Round | null,
+  roundModules: RoundModule[],
   contestants: Contestant[],
   predictions: StoredPrediction[],
   roundBombshellMap: Record<string, string[]>,
   roundQuestionsMap: Record<string, RoundQuestion[]>
 ) {
-  if (!round || predictions.length === 0) {
+  if (roundModules.length === 0 || predictions.length === 0) {
     return "No saved predictions yet for this round.";
   }
+  const summaries = roundModules
+    .map((module) => {
+      const modulePredictions = predictions.filter((prediction) => prediction.module_id === module.id);
 
-  if (isRecouplingPrediction(round.prediction_type)) {
-    const pairs = predictions
-      .filter(
-        (prediction) =>
-          (prediction.prediction_role === "couple_pick" || prediction.prediction_role == null) &&
-          prediction.contestant_1_id &&
-          prediction.contestant_2_id
-      )
-      .map(
-        (prediction) =>
-          `${getContestantName(contestants, prediction.contestant_1_id ?? "")} + ${getContestantName(
-            contestants,
-            prediction.contestant_2_id ?? ""
-          )}`
-      );
+      if (isRecouplingPrediction(module.prediction_type)) {
+        const pairs = modulePredictions
+          .filter(
+            (prediction) =>
+              (prediction.prediction_role === "couple_pick" || prediction.prediction_role == null) &&
+              prediction.contestant_1_id &&
+              prediction.contestant_2_id
+          )
+          .map(
+            (prediction) =>
+              `${getContestantName(contestants, prediction.contestant_1_id ?? "")} + ${getContestantName(
+                contestants,
+                prediction.contestant_2_id ?? ""
+              )}`
+          );
 
-    return pairs.length > 0 ? pairs.join(" • ") : "No couples saved yet.";
-  }
+        return `${getRoundModuleLabel(module)}: ${pairs.length > 0 ? pairs.join(" • ") : "No couples saved yet."}`;
+      }
 
-  if (round.prediction_type === "elimination_prediction") {
-    const dumpedPick = predictions.find((prediction) => prediction.prediction_role === "dumped_pick");
-    const bottomGroupPick = predictions.find(
-      (prediction) => prediction.prediction_role === "bottom_group_pick"
-    );
-
-    return [
-      `Dumped: ${getContestantName(contestants, dumpedPick?.contestant_1_id ?? "")}`,
-      `Danger: ${bottomGroupPick?.contestant_1_id ? getContestantName(contestants, bottomGroupPick.contestant_1_id) : "No pick"}`,
-    ].join(" • ");
-  }
-
-  if (round.prediction_type === "bombshell_arrival_prediction") {
-    const bombshellIds = getBombshellIdsForRound(round, roundBombshellMap);
-
-    if (bombshellIds.length === 0) {
-      return "Admin still needs to choose which bombshells this round is about.";
-    }
-
-    return bombshellIds
-      .map((bombshellId) => {
-        const targetPrediction = predictions.find(
-          (prediction) =>
-            prediction.prediction_role === "target_pick" &&
-            prediction.bombshell_contestant_id === bombshellId
+      if (module.prediction_type === "elimination_prediction") {
+        const dumpedPick = modulePredictions.find(
+          (prediction) => prediction.prediction_role === "dumped_pick"
+        );
+        const bottomGroupPick = modulePredictions.find(
+          (prediction) => prediction.prediction_role === "bottom_group_pick"
         );
 
-        return `${getContestantName(contestants, bombshellId)} -> ${getContestantName(
+        return `${getRoundModuleLabel(module)}: Dumped ${getContestantName(
           contestants,
-          targetPrediction?.contestant_1_id ?? ""
-        )}`;
-      })
-      .join(" • ");
-  }
+          dumpedPick?.contestant_1_id ?? ""
+        )} • Danger ${
+          bottomGroupPick?.contestant_1_id
+            ? getContestantName(contestants, bottomGroupPick.contestant_1_id)
+            : "No pick"
+        }`;
+      }
 
-  if (isQuestionChallengePrediction(round.prediction_type)) {
-    const roundQuestions = roundQuestionsMap[round.id] ?? [];
+      if (module.prediction_type === "bombshell_arrival_prediction") {
+        const bombshellIds = getBombshellIdsForRound(module, roundBombshellMap);
 
-    if (roundQuestions.length === 0) {
-      return "No questions have been set up for this round yet.";
-    }
+        if (bombshellIds.length === 0) {
+          return `${getRoundModuleLabel(module)}: Admin still needs to choose the bombshell lineup.`;
+        }
 
-    return roundQuestions
-      .map((question, index) => {
-        const prediction = predictions.find(
-          (row) =>
-            row.prediction_role === "question_pick" && row.round_question_id === question.id
+        return `${getRoundModuleLabel(module)}: ${bombshellIds
+          .map((bombshellId) => {
+            const targetPrediction = modulePredictions.find(
+              (prediction) =>
+                prediction.prediction_role === "target_pick" &&
+                prediction.bombshell_contestant_id === bombshellId
+            );
+
+            return `${getContestantName(contestants, bombshellId)} -> ${getContestantName(
+              contestants,
+              targetPrediction?.contestant_1_id ?? ""
+            )}`;
+          })
+          .join(" • ")}`;
+      }
+
+      if (isQuestionChallengePrediction(module.prediction_type)) {
+        const roundQuestions = (roundQuestionsMap[module.id] ?? []).sort(
+          (left, right) => left.question_order - right.question_order
         );
 
-        return `Q${index + 1}: ${getContestantName(
-          contestants,
-          prediction?.contestant_1_id ?? ""
-        )}`;
-      })
-      .join(" • ");
-  }
+        if (roundQuestions.length === 0) {
+          return `${getRoundModuleLabel(module)}: No questions have been set up yet.`;
+        }
 
-  return "This round does not use saved predictions.";
+        return `${getRoundModuleLabel(module)}: ${roundQuestions
+          .map((question, index) => {
+            const prediction = modulePredictions.find(
+              (row) =>
+                row.prediction_role === "question_pick" && row.round_question_id === question.id
+            );
+
+            return `Q${index + 1}: ${
+              (question.answer_type ?? "islander") === "couple"
+                ? getCoupleName(
+                    contestants,
+                    prediction?.contestant_1_id ?? null,
+                    prediction?.contestant_2_id ?? null
+                  )
+                : getContestantName(contestants, prediction?.contestant_1_id ?? "")
+            }`;
+          })
+          .join(" • ")}`;
+      }
+
+      return `${getRoundModuleLabel(module)}: No saved predictions.`;
+    })
+    .filter(Boolean);
+
+  return summaries.join(" || ");
 }
 
 function formatSavedPredictionTime(timestamp: string | null) {
@@ -210,6 +272,25 @@ function formatSavedPredictionTime(timestamp: string | null) {
   }).format(date);
 
   return `${eastern} / ${pacific}`;
+}
+
+function getEpisodeNumber(title: string) {
+  const match = title.match(/^Episode\s+(\d+)/i);
+  return match ? Number.parseInt(match[1], 10) : -1;
+}
+
+function sortRoundsForSelection(left: Round, right: Round) {
+  const episodeDifference = getEpisodeNumber(right.title) - getEpisodeNumber(left.title);
+
+  if (episodeDifference !== 0) {
+    return episodeDifference;
+  }
+
+  if (left.created_at && right.created_at) {
+    return new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+  }
+
+  return right.title.localeCompare(left.title);
 }
 
 async function createPredictionFeedPost(user: LeagueUser, round: Round) {
@@ -336,37 +417,108 @@ function ContestantPicker({
   );
 }
 
+function CouplePicker({
+  couples,
+  label,
+  helperText,
+  selectedValue,
+  onSelect,
+}: {
+  couples: CurrentCoupleOption[];
+  label: string;
+  helperText: string;
+  selectedValue: string;
+  onSelect: (coupleValue: string) => void;
+}) {
+  return (
+    <div className="rounded-3xl border border-zinc-800 bg-zinc-900/80 p-5">
+      <div className="mb-4">
+        <h3 className="text-lg font-semibold text-zinc-100">{label}</h3>
+        <p className="mt-1 text-sm text-zinc-400">{helperText}</p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {couples.map((couple) => {
+          const isSelected = couple.value === selectedValue;
+
+          return (
+            <button
+              key={couple.value}
+              type="button"
+              onClick={() => onSelect(couple.value)}
+              className={`rounded-2xl border px-4 py-4 text-left transition ${
+                isSelected
+                  ? "border-pink-400 bg-pink-500/10 shadow-[0_0_0_1px_rgba(244,114,182,0.35)]"
+                  : "border-zinc-800 bg-zinc-950 hover:border-blue-400 hover:bg-zinc-900"
+              }`}
+            >
+              <p className="font-medium text-zinc-100">{couple.label}</p>
+              <p className="mt-1 text-xs uppercase tracking-[0.2em] text-zinc-500">
+                {isSelected ? "Current pick" : "Tap to choose"}
+              </p>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function PredictPage() {
   const [user, setUser] = useState<LeagueUser | null>(null);
   const [contestants, setContestants] = useState<Contestant[]>([]);
+  const [dumpedContestantIds, setDumpedContestantIds] = useState<string[]>([]);
+  const [historyRounds, setHistoryRounds] = useState<RoundForHistory[]>([]);
+  const [roundTrackerEntriesByRoundId, setRoundTrackerEntriesByRoundId] = useState<
+    Record<string, RoundTrackerEntry[]>
+  >({});
   const [openRounds, setOpenRounds] = useState<Round[]>([]);
+  const [roundModulesMap, setRoundModulesMap] = useState<Record<string, RoundModule[]>>({});
   const [selectedRoundId, setSelectedRoundId] = useState("");
-  const [rows, setRows] = useState<PredictionFormRow[]>([createEmptyRow(1)]);
-  const [nextRowId, setNextRowId] = useState(2);
-  const [dumpedPickId, setDumpedPickId] = useState("");
-  const [bottomGroupPickId, setBottomGroupPickId] = useState("");
-  const [targetPickIdsByBombshell, setTargetPickIdsByBombshell] = useState<Record<string, string>>(
-    {}
-  );
+  const [rowsByModuleId, setRowsByModuleId] = useState<Record<string, PredictionFormRow[]>>({});
+  const [nextRowIdByModuleId, setNextRowIdByModuleId] = useState<Record<string, number>>({});
+  const [dumpedPickIdsByModuleId, setDumpedPickIdsByModuleId] = useState<Record<string, string>>({});
+  const [bottomGroupPickIdsByModuleId, setBottomGroupPickIdsByModuleId] = useState<
+    Record<string, string>
+  >({});
+  const [targetPickIdsByModuleId, setTargetPickIdsByModuleId] = useState<
+    Record<string, Record<string, string>>
+  >({});
   const [savedPredictions, setSavedPredictions] = useState<StoredPrediction[]>([]);
   const [savedPredictionUpdatedAt, setSavedPredictionUpdatedAt] = useState<string | null>(null);
   const [roundBombshellMap, setRoundBombshellMap] = useState<Record<string, string[]>>({});
   const [roundQuestionsMap, setRoundQuestionsMap] = useState<Record<string, RoundQuestion[]>>({});
-  const [questionPickIdsByQuestion, setQuestionPickIdsByQuestion] = useState<Record<string, string>>(
-    {}
-  );
+  const [questionPickIdsByModuleId, setQuestionPickIdsByModuleId] = useState<
+    Record<string, Record<string, string>>
+  >({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
-  const openRound =
-    openRounds.find((round) => round.id === selectedRoundId) ?? openRounds[0] ?? null;
-  const activeContestants = contestants.filter((contestant) => contestant.status === "active");
-  const contestantOptions =
-    openRound?.prediction_type === "bombshell_arrival_prediction" ? contestants : activeContestants;
-  const isInitialCouplingRound = openRound?.prediction_type === "initial_coupling_prediction";
-  const selectedBombshellIds = getBombshellIdsForRound(openRound, roundBombshellMap);
-  const selectedRoundQuestions = openRound ? roundQuestionsMap[openRound.id] ?? [] : [];
+  const openRound = useMemo(
+    () => openRounds.find((round) => round.id === selectedRoundId) ?? openRounds[0] ?? null,
+    [openRounds, selectedRoundId]
+  );
+  const openRoundModules = useMemo(
+    () =>
+      openRound
+        ? roundModulesMap[openRound.id]?.length
+          ? roundModulesMap[openRound.id]
+          : [buildFallbackRoundModule(openRound)]
+        : [],
+    [openRound, roundModulesMap]
+  );
+  const activeContestants = contestants.filter(
+    (contestant) =>
+      contestant.status === "active" && !dumpedContestantIds.includes(contestant.id)
+  );
+  const currentCoupleOptions = useMemo(
+    () => buildCurrentCoupleOptions(contestants, historyRounds, roundTrackerEntriesByRoundId),
+    [contestants, historyRounds, roundTrackerEntriesByRoundId]
+  );
+  const isRoundWatchOnly =
+    openRoundModules.length > 0 &&
+    openRoundModules.every((module) => isNoScoreEpisode(module.prediction_type));
 
   useEffect(() => {
     const loadPredictionPage = async () => {
@@ -386,8 +538,12 @@ export default function PredictPage() {
       const [
         { data: contestantsData, error: contestantsError },
         { data: roundsData, error: roundError },
+        { data: historyRoundsData, error: historyRoundsError },
+        { data: modulesData, error: modulesError },
         { data: roundBombshellsData, error: roundBombshellsError },
         { data: roundQuestionsData, error: roundQuestionsError },
+        { data: roundResultsData, error: roundResultsError },
+        { data: trackerEntriesData, error: trackerEntriesError },
       ] = await Promise.all([
         supabase
           .from("contestants")
@@ -395,26 +551,53 @@ export default function PredictPage() {
           .order("name"),
         supabase
           .from("rounds")
-          .select("id, title, prediction_type, bombshell_contestant_id, status")
+          .select("id, title, prediction_type, bombshell_contestant_id, status, created_at")
           .eq("status", "open")
-          .order("created_at", { ascending: false })
-          .order("title"),
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("rounds")
+          .select("id, title, created_at")
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("round_prediction_modules")
+          .select("id, round_id, prediction_type, title, sort_order, created_at")
+          .order("sort_order")
+          .order("created_at"),
         supabase
           .from("round_bombshells")
-          .select("round_id, bombshell_contestant_id"),
+          .select("round_id, module_id, bombshell_contestant_id"),
         supabase
           .from("round_questions")
-          .select("id, round_id, question_text, question_order")
+          .select("id, round_id, module_id, question_text, answer_type, question_order")
           .order("question_order")
           .order("created_at"),
+        supabase
+          .from("round_results")
+          .select("contestant_id, result_type"),
+        supabase
+          .from("round_tracker_entries")
+          .select("round_id, contestant_id, tracker_state, partner_contestant_id"),
       ]);
 
-      if (contestantsError || roundError || roundBombshellsError || roundQuestionsError) {
+      if (
+        contestantsError ||
+        roundError ||
+        historyRoundsError ||
+        modulesError ||
+        roundBombshellsError ||
+        roundQuestionsError ||
+        roundResultsError ||
+        trackerEntriesError
+      ) {
         setErrorMessage(
           contestantsError?.message ??
             roundError?.message ??
+            historyRoundsError?.message ??
+            modulesError?.message ??
             roundBombshellsError?.message ??
             roundQuestionsError?.message ??
+            roundResultsError?.message ??
+            trackerEntriesError?.message ??
             "Unable to load predictions."
         );
         setLoading(false);
@@ -422,30 +605,68 @@ export default function PredictPage() {
       }
 
       setContestants((contestantsData ?? []) as Contestant[]);
-      const nextRounds = (roundsData ?? []) as Round[];
-      const nextRoundBombshellMap = ((roundBombshellsData ?? []) as RoundBombshellRow[]).reduce<
+      setHistoryRounds((historyRoundsData ?? []) as RoundForHistory[]);
+      const nextRounds = [...((roundsData ?? []) as Round[])].sort(sortRoundsForSelection);
+      const nextModulesMap = ((modulesData ?? []) as RoundModule[]).reduce<Record<string, RoundModule[]>>(
+        (map, row) => {
+          map[row.round_id] = sortRoundModules([...(map[row.round_id] ?? []), row]);
+          return map;
+        },
+        {}
+      );
+      const nextRoundBombshellMap = ((roundBombshellsData ?? []) as Array<
+        RoundBombshellRow & { module_id: string | null }
+      >).reduce<
         Record<string, string[]>
       >((map, row) => {
-        map[row.round_id] = [...(map[row.round_id] ?? []), row.bombshell_contestant_id];
+        const mapKey = row.module_id ?? row.round_id;
+        map[mapKey] = [...(map[mapKey] ?? []), row.bombshell_contestant_id];
         return map;
       }, {});
       const nextRoundQuestionsMap = ((roundQuestionsData ?? []) as RoundQuestion[]).reduce<
         Record<string, RoundQuestion[]>
       >((map, row) => {
-        map[row.round_id] = [...(map[row.round_id] ?? []), row].sort(
+        const mapKey = row.module_id ?? row.round_id;
+        map[mapKey] = [...(map[mapKey] ?? []), row].sort(
           (left, right) => left.question_order - right.question_order
         );
         return map;
       }, {});
+      const nextTrackerEntriesByRoundId = ((trackerEntriesData ?? []) as RoundTrackerEntry[]).reduce<
+        Record<string, RoundTrackerEntry[]>
+      >((map, entry) => {
+        map[entry.round_id] = [...(map[entry.round_id] ?? []), entry];
+        return map;
+      }, {});
+      setRoundModulesMap(nextModulesMap);
       setRoundBombshellMap(nextRoundBombshellMap);
       setRoundQuestionsMap(nextRoundQuestionsMap);
+      setRoundTrackerEntriesByRoundId(nextTrackerEntriesByRoundId);
+      setDumpedContestantIds(
+        Array.from(
+          new Set(
+            ((roundResultsData ?? []) as Array<{ contestant_id: string | null; result_type: string }>)
+              .filter((result) => result.result_type === "dumped_pick" && result.contestant_id)
+              .map((result) => result.contestant_id as string)
+          )
+        )
+      );
       setOpenRounds(nextRounds);
       setSelectedRoundId((currentValue) => {
-        if (currentValue && nextRounds.some((round) => round.id === currentValue)) {
+        const preferredRounds = nextRounds.filter((round) => {
+          const modules = nextModulesMap[round.id]?.length
+            ? nextModulesMap[round.id]
+            : [buildFallbackRoundModule(round)];
+
+          return modules.some((module) => !isNoScoreEpisode(module.prediction_type));
+        });
+        const roundsToPrefer = preferredRounds.length > 0 ? preferredRounds : nextRounds;
+
+        if (currentValue && roundsToPrefer.some((round) => round.id === currentValue)) {
           return currentValue;
         }
 
-        return nextRounds[0]?.id ?? "";
+        return roundsToPrefer[0]?.id ?? "";
       });
 
       setLoading(false);
@@ -457,18 +678,18 @@ export default function PredictPage() {
   useEffect(() => {
     const loadExistingPredictions = async () => {
       if (!user || !selectedRoundId) {
-        setRows([createEmptyRow(1)]);
-        setNextRowId(2);
+        setRowsByModuleId({});
+        setNextRowIdByModuleId({});
         setSavedPredictions([]);
         setSavedPredictionUpdatedAt(null);
-        setQuestionPickIdsByQuestion({});
+        setQuestionPickIdsByModuleId({});
         return;
       }
 
       const { data: existingPredictions, error: predictionsError } = await supabase
         .from("predictions")
         .select(
-          "contestant_1_id, contestant_2_id, prediction_role, bombshell_contestant_id, round_question_id, created_at"
+          "contestant_1_id, contestant_2_id, prediction_role, bombshell_contestant_id, round_question_id, module_id, created_at"
         )
         .eq("round_id", selectedRoundId)
         .eq("user_id", user.id)
@@ -487,116 +708,146 @@ export default function PredictPage() {
           : null
       );
 
-      setDumpedPickId("");
-      setBottomGroupPickId("");
-      setTargetPickIdsByBombshell({});
-      setQuestionPickIdsByQuestion({});
+      const nextRowsByModuleId: Record<string, PredictionFormRow[]> = {};
+      const nextRowIdByModuleId: Record<string, number> = {};
+      const nextDumpedPickIdsByModuleId: Record<string, string> = {};
+      const nextBottomGroupPickIdsByModuleId: Record<string, string> = {};
+      const nextTargetPickIdsByModuleId: Record<string, Record<string, string>> = {};
+      const nextQuestionPickIdsByModuleId: Record<string, Record<string, string>> = {};
 
-      if (openRound && isRecouplingPrediction(openRound.prediction_type)) {
-        const couplePredictions = typedPredictions.filter(
-          (prediction) =>
-            (prediction.prediction_role === "couple_pick" || prediction.prediction_role == null) &&
-            prediction.contestant_1_id &&
-            prediction.contestant_2_id
+      openRoundModules.forEach((module) => {
+        const modulePredictions = typedPredictions.filter(
+          (prediction) => prediction.module_id === module.id
         );
 
-        if (couplePredictions.length > 0) {
-          setRows(
-            couplePredictions.map((prediction, index) => ({
-              rowId: index + 1,
-              contestant1Id: prediction.contestant_1_id ?? "",
-              contestant2Id: prediction.contestant_2_id ?? "",
-            }))
+        if (isRecouplingPrediction(module.prediction_type)) {
+          const couplePredictions = modulePredictions.filter(
+            (prediction) =>
+              (prediction.prediction_role === "couple_pick" || prediction.prediction_role == null) &&
+              prediction.contestant_1_id &&
+              prediction.contestant_2_id
           );
-          setNextRowId(couplePredictions.length + 1);
-        } else {
-          setRows([createEmptyRow(1)]);
-          setNextRowId(2);
+
+          nextRowsByModuleId[module.id] =
+            couplePredictions.length > 0
+              ? couplePredictions.map((prediction, index) => ({
+                  rowId: index + 1,
+                  contestant1Id: prediction.contestant_1_id ?? "",
+                  contestant2Id: prediction.contestant_2_id ?? "",
+                }))
+              : [createEmptyRow(1)];
+          nextRowIdByModuleId[module.id] = couplePredictions.length + 1 || 2;
+          return;
         }
-        return;
-      }
 
-      if (openRound?.prediction_type === "elimination_prediction") {
-        setRows([createEmptyRow(1)]);
-        setNextRowId(2);
-        setDumpedPickId(
-          typedPredictions.find((prediction) => prediction.prediction_role === "dumped_pick")
-            ?.contestant_1_id ?? ""
-        );
-        setBottomGroupPickId(
-          typedPredictions.find((prediction) => prediction.prediction_role === "bottom_group_pick")
-            ?.contestant_1_id ?? ""
-        );
-        return;
-      }
+        nextRowsByModuleId[module.id] = [createEmptyRow(1)];
+        nextRowIdByModuleId[module.id] = 2;
 
-      if (openRound?.prediction_type === "bombshell_arrival_prediction") {
-        setRows([createEmptyRow(1)]);
-        setNextRowId(2);
-        setTargetPickIdsByBombshell(
-          typedPredictions.reduce<Record<string, string>>((map, prediction) => {
-            if (
-              prediction.prediction_role === "target_pick" &&
-              prediction.bombshell_contestant_id &&
-              prediction.contestant_1_id
-            ) {
-              map[prediction.bombshell_contestant_id] = prediction.contestant_1_id;
-            }
-            return map;
-          }, {})
-        );
-        return;
-      }
+        if (module.prediction_type === "elimination_prediction") {
+          nextDumpedPickIdsByModuleId[module.id] =
+            modulePredictions.find((prediction) => prediction.prediction_role === "dumped_pick")
+              ?.contestant_1_id ?? "";
+          nextBottomGroupPickIdsByModuleId[module.id] =
+            modulePredictions.find((prediction) => prediction.prediction_role === "bottom_group_pick")
+              ?.contestant_1_id ?? "";
+          return;
+        }
 
-      if (isQuestionChallengePrediction(openRound?.prediction_type ?? "")) {
-        setRows([createEmptyRow(1)]);
-        setNextRowId(2);
-        setQuestionPickIdsByQuestion(
-          typedPredictions.reduce<Record<string, string>>((map, prediction) => {
-            if (
-              prediction.prediction_role === "question_pick" &&
-              prediction.round_question_id &&
-              prediction.contestant_1_id
-            ) {
-              map[prediction.round_question_id] = prediction.contestant_1_id;
-            }
-            return map;
-          }, {})
-        );
-        return;
-      }
+        if (module.prediction_type === "bombshell_arrival_prediction") {
+          nextTargetPickIdsByModuleId[module.id] = modulePredictions.reduce<Record<string, string>>(
+            (map, prediction) => {
+              if (
+                prediction.prediction_role === "target_pick" &&
+                prediction.bombshell_contestant_id &&
+                prediction.contestant_1_id
+              ) {
+                map[prediction.bombshell_contestant_id] = prediction.contestant_1_id;
+              }
+              return map;
+            },
+            {}
+          );
+          return;
+        }
 
-      setRows([createEmptyRow(1)]);
-      setNextRowId(2);
+        if (isQuestionChallengePrediction(module.prediction_type)) {
+          nextQuestionPickIdsByModuleId[module.id] = modulePredictions.reduce<Record<string, string>>(
+            (map, prediction) => {
+              const question = (roundQuestionsMap[module.id] ?? []).find(
+                (row) => row.id === prediction.round_question_id
+              );
+              if (
+                prediction.prediction_role === "question_pick" &&
+                prediction.round_question_id &&
+                prediction.contestant_1_id
+              ) {
+                map[prediction.round_question_id] =
+                  (question?.answer_type ?? "islander") === "couple" && prediction.contestant_2_id
+                    ? [prediction.contestant_1_id, prediction.contestant_2_id].sort().join(":")
+                    : prediction.contestant_1_id;
+              }
+              return map;
+            },
+            {}
+          );
+        }
+      });
+
+      setRowsByModuleId(nextRowsByModuleId);
+      setNextRowIdByModuleId(nextRowIdByModuleId);
+      setDumpedPickIdsByModuleId(nextDumpedPickIdsByModuleId);
+      setBottomGroupPickIdsByModuleId(nextBottomGroupPickIdsByModuleId);
+      setTargetPickIdsByModuleId(nextTargetPickIdsByModuleId);
+      setQuestionPickIdsByModuleId(nextQuestionPickIdsByModuleId);
     };
 
     void loadExistingPredictions();
-  }, [selectedRoundId, user, openRound?.prediction_type]);
+  }, [selectedRoundId, user, openRoundModules, roundQuestionsMap]);
 
   const updateRow = (
+    moduleId: string,
     rowId: number,
     field: "contestant1Id" | "contestant2Id",
     value: string
   ) => {
-    setRows((currentRows) =>
-      currentRows.map((row) => (row.rowId === rowId ? { ...row, [field]: value } : row))
-    );
+    setRowsByModuleId((currentValue) => ({
+      ...currentValue,
+      [moduleId]: (currentValue[moduleId] ?? [createEmptyRow(1)]).map((row) =>
+        row.rowId === rowId ? { ...row, [field]: value } : row
+      ),
+    }));
   };
 
-  const addRow = () => {
-    setRows((currentRows) => [...currentRows, createEmptyRow(nextRowId)]);
-    setNextRowId((currentValue) => currentValue + 1);
+  const addRow = (moduleId: string) => {
+    const nextRowId = nextRowIdByModuleId[moduleId] ?? 2;
+    setRowsByModuleId((currentValue) => ({
+      ...currentValue,
+      [moduleId]: [...(currentValue[moduleId] ?? [createEmptyRow(1)]), createEmptyRow(nextRowId)],
+    }));
+    setNextRowIdByModuleId((currentValue) => ({
+      ...currentValue,
+      [moduleId]: nextRowId + 1,
+    }));
   };
 
-  const removeRow = (rowId: number) => {
-    setRows((currentRows) => {
-      const nextRows = currentRows.filter((row) => row.rowId !== rowId);
-      return nextRows.length > 0 ? nextRows : [createEmptyRow(nextRowId)];
+  const removeRow = (moduleId: string, rowId: number) => {
+    setRowsByModuleId((currentValue) => {
+      const nextRows = (currentValue[moduleId] ?? []).filter((row) => row.rowId !== rowId);
+
+      return {
+        ...currentValue,
+        [moduleId]: nextRows.length > 0 ? nextRows : [createEmptyRow(1)],
+      };
     });
-    if (rows.length === 1) {
-      setNextRowId((currentValue) => currentValue + 1);
-    }
   };
+
+  const getContestantOptionsForModule = (_module: RoundModule) => activeContestants;
+  const isInitialCouplingModule = (module: RoundModule) =>
+    module.prediction_type === "initial_coupling_prediction";
+  const getSelectedBombshellIds = (module: RoundModule) =>
+    getBombshellIdsForRound(module, roundBombshellMap);
+  const getSelectedRoundQuestions = (module: RoundModule) =>
+    roundQuestionsMap[module.id] ?? [];
 
   const savePredictions = async () => {
     setSaving(true);
@@ -627,10 +878,10 @@ export default function PredictPage() {
       return;
     }
 
-    if (isNoScoreEpisode(openRound.prediction_type)) {
+    if (isRoundWatchOnly) {
       setSavedPredictions([]);
       setSavedPredictionUpdatedAt(null);
-      setSuccessMessage("This is a no-score episode, so there is nothing to save.");
+      setSuccessMessage("This episode is watch-only, so there is nothing to save.");
       setSaving(false);
       return;
     }
@@ -639,6 +890,7 @@ export default function PredictPage() {
       | Array<{
           user_id: string;
           round_id: string;
+          module_id: string;
           prediction_role: string;
           round_question_id?: string | null;
           contestant_1_id: string;
@@ -647,121 +899,145 @@ export default function PredictPage() {
         }>
       | null = null;
 
-    if (isRecouplingPrediction(openRound.prediction_type)) {
-      const completedRows = rows.filter(
-        (row) => row.contestant1Id.trim() !== "" && row.contestant2Id.trim() !== ""
-      );
+    try {
+      predictionRows = openRoundModules.flatMap((module) => {
+        if (isNoScoreEpisode(module.prediction_type)) {
+          return [];
+        }
 
-      if (completedRows.length === 0) {
-        setErrorMessage("Add at least one predicted couple before saving.");
-        setSaving(false);
-        return;
-      }
+        if (isRecouplingPrediction(module.prediction_type)) {
+          const moduleRows = rowsByModuleId[module.id] ?? [createEmptyRow(1)];
+          const completedRows = moduleRows.filter(
+            (row) => row.contestant1Id.trim() !== "" && row.contestant2Id.trim() !== ""
+          );
 
-      if (completedRows.some((row) => row.contestant1Id === row.contestant2Id)) {
-        setErrorMessage("A contestant cannot be paired with themselves.");
-        setSaving(false);
-        return;
-      }
+          if (completedRows.length === 0) {
+            throw new Error(`Add at least one predicted couple for ${getRoundModuleLabel(module)}.`);
+          }
 
-      const uniquePairs = new Set(
-        completedRows.map((row) => normalizePair(row.contestant1Id, row.contestant2Id))
-      );
+          if (completedRows.some((row) => row.contestant1Id === row.contestant2Id)) {
+            throw new Error(`A contestant cannot be paired with themselves in ${getRoundModuleLabel(module)}.`);
+          }
 
-      if (uniquePairs.size !== completedRows.length) {
-        setErrorMessage("Duplicate predicted couples are not allowed.");
-        setSaving(false);
-        return;
-      }
+          const uniquePairs = new Set(
+            completedRows.map((row) => normalizePair(row.contestant1Id, row.contestant2Id))
+          );
 
-      predictionRows = completedRows.map((row) => ({
-        user_id: user.id,
-        round_id: openRound.id,
-        prediction_role: "couple_pick",
-        contestant_1_id: row.contestant1Id,
-        contestant_2_id: row.contestant2Id,
-      }));
-    }
+          if (uniquePairs.size !== completedRows.length) {
+            throw new Error(`Duplicate predicted couples are not allowed in ${getRoundModuleLabel(module)}.`);
+          }
 
-    if (openRound.prediction_type === "elimination_prediction") {
-      if (!dumpedPickId) {
-        setErrorMessage("Pick who you think gets dumped.");
-        setSaving(false);
-        return;
-      }
+          return completedRows.map((row) => ({
+            user_id: user.id,
+            round_id: openRound.id,
+            module_id: module.id,
+            prediction_role: "couple_pick",
+            contestant_1_id: row.contestant1Id,
+            contestant_2_id: row.contestant2Id,
+          }));
+        }
 
-      if (bottomGroupPickId && bottomGroupPickId === dumpedPickId) {
-        setErrorMessage("Choose a different islander for bottom group danger.");
-        setSaving(false);
-        return;
-      }
+        if (module.prediction_type === "elimination_prediction") {
+          const dumpedPickId = dumpedPickIdsByModuleId[module.id] ?? "";
+          const bottomGroupPickId = bottomGroupPickIdsByModuleId[module.id] ?? "";
 
-      predictionRows = [
-        {
-          user_id: user.id,
-          round_id: openRound.id,
-          prediction_role: "dumped_pick",
-          contestant_1_id: dumpedPickId,
-        },
-        ...(bottomGroupPickId
-          ? [
-              {
-                user_id: user.id,
-                round_id: openRound.id,
-                prediction_role: "bottom_group_pick",
-                contestant_1_id: bottomGroupPickId,
-              },
-            ]
-          : []),
-      ];
-    }
+          if (!dumpedPickId) {
+            throw new Error(`Pick who gets dumped for ${getRoundModuleLabel(module)}.`);
+          }
 
-    if (openRound.prediction_type === "bombshell_arrival_prediction") {
-      if (selectedBombshellIds.length === 0) {
-        setErrorMessage("Admin still needs to choose which bombshells this round is about.");
-        setSaving(false);
-        return;
-      }
+          if (bottomGroupPickId && bottomGroupPickId === dumpedPickId) {
+            throw new Error(`Choose a different danger pick for ${getRoundModuleLabel(module)}.`);
+          }
 
-      if (selectedBombshellIds.some((bombshellId) => !targetPickIdsByBombshell[bombshellId])) {
-        setErrorMessage("Pick a target for each bombshell before saving.");
-        setSaving(false);
-        return;
-      }
+          return [
+            {
+              user_id: user.id,
+              round_id: openRound.id,
+              module_id: module.id,
+              prediction_role: "dumped_pick",
+              contestant_1_id: dumpedPickId,
+            },
+            ...(bottomGroupPickId
+              ? [
+                  {
+                    user_id: user.id,
+                    round_id: openRound.id,
+                    module_id: module.id,
+                    prediction_role: "bottom_group_pick",
+                    contestant_1_id: bottomGroupPickId,
+                  },
+                ]
+              : []),
+          ];
+        }
 
-      predictionRows = selectedBombshellIds.map((bombshellId) => ({
-        user_id: user.id,
-        round_id: openRound.id,
-        prediction_role: "target_pick",
-        bombshell_contestant_id: bombshellId,
-        contestant_1_id: targetPickIdsByBombshell[bombshellId],
-      }));
-    }
+        if (module.prediction_type === "bombshell_arrival_prediction") {
+          const bombshellIds = getSelectedBombshellIds(module);
+          const moduleTargetPicks = targetPickIdsByModuleId[module.id] ?? {};
 
-    if (isQuestionChallengePrediction(openRound.prediction_type)) {
-      if (selectedRoundQuestions.length === 0) {
-        setErrorMessage("Admin still needs to add the questions for this round.");
-        setSaving(false);
-        return;
-      }
+          if (bombshellIds.length === 0) {
+            throw new Error(
+              `Admin still needs to choose which bombshells are in ${getRoundModuleLabel(module)}.`
+            );
+          }
 
-      if (selectedRoundQuestions.some((question) => !questionPickIdsByQuestion[question.id])) {
-        setErrorMessage("Answer every question before saving.");
-        setSaving(false);
-        return;
-      }
+          if (bombshellIds.some((bombshellId) => !moduleTargetPicks[bombshellId])) {
+            throw new Error(`Pick a target for each bombshell in ${getRoundModuleLabel(module)}.`);
+          }
 
-      predictionRows = selectedRoundQuestions.map((question) => ({
-        user_id: user.id,
-        round_id: openRound.id,
-        prediction_role: "question_pick",
-        round_question_id: question.id,
-        contestant_1_id: questionPickIdsByQuestion[question.id],
-      }));
+          return bombshellIds.map((bombshellId) => ({
+            user_id: user.id,
+            round_id: openRound.id,
+            module_id: module.id,
+            prediction_role: "target_pick",
+            bombshell_contestant_id: bombshellId,
+            contestant_1_id: moduleTargetPicks[bombshellId],
+          }));
+        }
+
+        if (isQuestionChallengePrediction(module.prediction_type)) {
+          const moduleQuestions = getSelectedRoundQuestions(module);
+          const moduleQuestionPicks = questionPickIdsByModuleId[module.id] ?? {};
+
+          if (moduleQuestions.length === 0) {
+            throw new Error(`Admin still needs to add the questions for ${getRoundModuleLabel(module)}.`);
+          }
+
+          if (moduleQuestions.some((question) => !moduleQuestionPicks[question.id])) {
+            throw new Error(`Answer every question in ${getRoundModuleLabel(module)} before saving.`);
+          }
+
+          return moduleQuestions.map((question) => {
+            const selectedAnswer = moduleQuestionPicks[question.id];
+            const isCoupleAnswer = (question.answer_type ?? "islander") === "couple";
+            const coupleAnswer = isCoupleAnswer ? parseCoupleValue(selectedAnswer) : null;
+
+            return {
+              user_id: user.id,
+              round_id: openRound.id,
+              module_id: module.id,
+              prediction_role: "question_pick",
+              round_question_id: question.id,
+              contestant_1_id: isCoupleAnswer
+                ? coupleAnswer?.contestant1Id ?? ""
+                : selectedAnswer,
+              contestant_2_id: isCoupleAnswer
+                ? coupleAnswer?.contestant2Id ?? null
+                : null,
+            };
+          });
+        }
+
+        throw new Error(`${getRoundModuleLabel(module)} is not ready to save yet.`);
+      });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to save predictions.");
+      setSaving(false);
+      return;
     }
 
     if (!predictionRows || predictionRows.length === 0) {
-      setErrorMessage("This round type is not ready to save yet.");
+      setErrorMessage("This episode does not have any active prediction modules to save.");
       setSaving(false);
       return;
     }
@@ -770,7 +1046,7 @@ export default function PredictPage() {
       .from("predictions")
       .insert(predictionRows)
       .select(
-        "contestant_1_id, contestant_2_id, prediction_role, bombshell_contestant_id, created_at"
+        "contestant_1_id, contestant_2_id, prediction_role, bombshell_contestant_id, round_question_id, module_id, created_at"
       );
 
     if (insertError) {
@@ -850,11 +1126,13 @@ export default function PredictPage() {
                     <span className="font-semibold">Title:</span> {openRound.title}
                   </p>
                   <p>
-                    <span className="font-semibold">Prediction type:</span>{" "}
-                    {getPredictionTypeLabel(openRound.prediction_type)}
+                    <span className="font-semibold">Prediction modules:</span>{" "}
+                    {getRoundModuleSummary(openRoundModules)}
                   </p>
                   <p className="text-sm text-zinc-400">
-                    {getPredictionTypeDescription(openRound.prediction_type)}
+                    {openRoundModules.length > 1
+                      ? "This episode has multiple prediction modules. Save all of them together in one submission."
+                      : getRoundModuleDescription(openRoundModules[0] ?? buildFallbackRoundModule(openRound))}
                   </p>
                 </div>
               ) : (
@@ -872,33 +1150,30 @@ export default function PredictPage() {
                   >
                     {openRounds.map((round) => (
                       <option key={round.id} value={round.id}>
-                        {round.title}
-                        {round.prediction_type === "bombshell_arrival_prediction"
-                          ? getBombshellIdsForRound(round, roundBombshellMap).length > 0
-                            ? ` (${getBombshellIdsForRound(round, roundBombshellMap)
-                                .map((bombshellId) => getContestantName(contestants, bombshellId))
-                                .join(" + ")})`
-                            : ` (${getPredictionTypeLabel(round.prediction_type)})`
-                          : ` (${getPredictionTypeLabel(round.prediction_type)})`}
+                        {round.title} ({getRoundModuleSummary(
+                          roundModulesMap[round.id]?.length
+                            ? roundModulesMap[round.id]
+                            : [buildFallbackRoundModule(round)]
+                        )})
                       </option>
                     ))}
                   </select>
                 </label>
               ) : null}
-              {openRound && !isNoScoreEpisode(openRound.prediction_type) ? (
+              {openRound && !isRoundWatchOnly ? (
                 <div className="mt-5 rounded-2xl border border-blue-500/30 bg-blue-500/8 p-4 text-sm text-blue-100">
                   Your picks auto-load when you switch between open rounds, so you can test each
                   format without losing what you already saved.
                 </div>
               ) : null}
-              {openRound && !isNoScoreEpisode(openRound.prediction_type) ? (
+              {openRound && !isRoundWatchOnly ? (
                 <div className="mt-5 rounded-2xl border border-emerald-500/25 bg-emerald-500/8 p-4">
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-200/90">
                     Saved for this round
                   </p>
                   <p className="mt-2 text-sm leading-7 text-emerald-50">
                     {formatSavedPredictionSummary(
-                      openRound,
+                      openRoundModules,
                       contestants,
                       savedPredictions,
                       roundBombshellMap,
@@ -915,204 +1190,264 @@ export default function PredictPage() {
             </section>
 
             <section className="rounded-3xl border border-zinc-800 bg-zinc-950/90 p-8 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h2 className="text-xl font-semibold">
-                    {openRound && isRecouplingPrediction(openRound.prediction_type)
-                      ? "Predicted couples"
-                      : getPredictionTypeLabel(openRound?.prediction_type ?? "Prediction form")}
-                  </h2>
-                  <p className="mt-1 text-sm text-zinc-400">
-                    {openRound && isRecouplingPrediction(openRound.prediction_type)
-                      ? "Choose the active contestants you think will couple up."
-                      : openRound
-                        ? getPredictionTypeDescription(openRound.prediction_type)
-                        : "Open a round in admin to start testing predictions."}
-                  </p>
-                </div>
-                {openRound && isRecouplingPrediction(openRound.prediction_type) ? (
-                  <button
-                    type="button"
-                    onClick={addRow}
-                    className="rounded-full border border-zinc-700 bg-zinc-900 px-5 py-3 text-sm font-semibold text-zinc-100 transition hover:border-pink-400 hover:text-pink-300"
-                  >
-                    Add couple
-                  </button>
-                ) : null}
-              </div>
+              {openRound ? (
+                <div className="space-y-8">
+                  {openRoundModules.map((module) => {
+                    const contestantOptions = getContestantOptionsForModule(module);
+                    const selectedBombshellIds = getSelectedBombshellIds(module);
+                    const selectedRoundQuestions = getSelectedRoundQuestions(module);
+                    const moduleRows = rowsByModuleId[module.id] ?? [createEmptyRow(1)];
+                    const dumpedPickId = dumpedPickIdsByModuleId[module.id] ?? "";
+                    const bottomGroupPickId = bottomGroupPickIdsByModuleId[module.id] ?? "";
+                    const targetPickIdsByBombshell = targetPickIdsByModuleId[module.id] ?? {};
+                    const questionPickIdsByQuestion = questionPickIdsByModuleId[module.id] ?? {};
 
-              {openRound && isRecouplingPrediction(openRound.prediction_type) ? (
-                <div className="mt-6 space-y-4">
-                  {isInitialCouplingRound ? <CastBoard contestants={activeContestants} /> : null}
-                  {rows.map((row, index) => (
-                    <div
-                      key={row.rowId}
-                      className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4"
-                    >
-                      <div className="mb-3 flex items-center justify-between">
-                        <p className="text-sm font-semibold text-zinc-300">
-                          Couple {index + 1}
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => removeRow(row.rowId)}
-                          className="text-sm font-medium text-zinc-500 transition hover:text-zinc-300"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
-                          Contestant 1
-                          <select
-                            value={row.contestant1Id}
-                            onChange={(event) =>
-                              updateRow(row.rowId, "contestant1Id", event.target.value)
-                            }
-                            className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-pink-400"
-                          >
-                            <option value="">Select a contestant</option>
-                            {activeContestants.map((contestant) => (
-                              <option key={contestant.id} value={contestant.id}>
-                                {contestant.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                    return (
+                      <div key={module.id} className="rounded-3xl border border-zinc-800 bg-zinc-900/60 p-6">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <h2 className="text-xl font-semibold">{getRoundModuleLabel(module)}</h2>
+                            <p className="mt-1 text-sm text-zinc-400">
+                              {getRoundModuleDescription(module)}
+                            </p>
+                          </div>
+                          {isRecouplingPrediction(module.prediction_type) ? (
+                            <button
+                              type="button"
+                              onClick={() => addRow(module.id)}
+                              className="rounded-full border border-zinc-700 bg-zinc-950 px-5 py-3 text-sm font-semibold text-zinc-100 transition hover:border-pink-400 hover:text-pink-300"
+                            >
+                              Add couple
+                            </button>
+                          ) : null}
+                        </div>
 
-                        <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
-                          Contestant 2
-                          <select
-                            value={row.contestant2Id}
-                            onChange={(event) =>
-                              updateRow(row.rowId, "contestant2Id", event.target.value)
-                            }
-                            className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-pink-400"
-                          >
-                            <option value="">Select a contestant</option>
-                            {activeContestants.map((contestant) => (
-                              <option key={contestant.id} value={contestant.id}>
-                                {contestant.name}
-                              </option>
+                        {isRecouplingPrediction(module.prediction_type) ? (
+                          <div className="mt-6 space-y-4">
+                            {isInitialCouplingModule(module) ? (
+                              <CastBoard contestants={activeContestants} />
+                            ) : null}
+                            {moduleRows.map((row, index) => (
+                              <div
+                                key={`${module.id}-${row.rowId}`}
+                                className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4"
+                              >
+                                <div className="mb-3 flex items-center justify-between">
+                                  <p className="text-sm font-semibold text-zinc-300">
+                                    Couple {index + 1}
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeRow(module.id, row.rowId)}
+                                    className="text-sm font-medium text-zinc-500 transition hover:text-zinc-300"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                  <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                                    Contestant 1
+                                    <select
+                                      value={row.contestant1Id}
+                                      onChange={(event) =>
+                                        updateRow(module.id, row.rowId, "contestant1Id", event.target.value)
+                                      }
+                                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-pink-400"
+                                    >
+                                      <option value="">Select a contestant</option>
+                                      {activeContestants.map((contestant) => (
+                                        <option key={contestant.id} value={contestant.id}>
+                                          {contestant.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                                    Contestant 2
+                                    <select
+                                      value={row.contestant2Id}
+                                      onChange={(event) =>
+                                        updateRow(module.id, row.rowId, "contestant2Id", event.target.value)
+                                      }
+                                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-pink-400"
+                                    >
+                                      <option value="">Select a contestant</option>
+                                      {activeContestants.map((contestant) => (
+                                        <option key={contestant.id} value={contestant.id}>
+                                          {contestant.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                </div>
+                              </div>
                             ))}
-                          </select>
-                        </label>
+                          </div>
+                        ) : module.prediction_type === "elimination_prediction" ? (
+                          <div className="mt-6 space-y-4">
+                            <div className="grid gap-3 rounded-2xl border border-yellow-500/25 bg-yellow-500/8 p-4 text-sm text-yellow-100 sm:grid-cols-2">
+                              <p>
+                                <span className="font-semibold">Dumped pick:</span>{" "}
+                                {getContestantName(contestantOptions, dumpedPickId)}
+                              </p>
+                              <p>
+                                <span className="font-semibold">Danger pick:</span>{" "}
+                                {bottomGroupPickId
+                                  ? getContestantName(contestantOptions, bottomGroupPickId)
+                                  : "Optional"}
+                              </p>
+                            </div>
+                            <ContestantPicker
+                              contestants={activeContestants}
+                              label="Who gets dumped?"
+                              helperText="This is your main elimination call. Pick the islander you think is fully out."
+                              selectedId={dumpedPickId}
+                              onSelect={(contestantId) =>
+                                setDumpedPickIdsByModuleId((currentValue) => ({
+                                  ...currentValue,
+                                  [module.id]: contestantId,
+                                }))
+                              }
+                            />
+                            <ContestantPicker
+                              contestants={activeContestants}
+                              label="Who lands in danger but survives?"
+                              helperText="Optional partial-credit pick for someone who ends up vulnerable without getting dumped."
+                              selectedId={bottomGroupPickId}
+                              onSelect={(contestantId) =>
+                                setBottomGroupPickIdsByModuleId((currentValue) => ({
+                                  ...currentValue,
+                                  [module.id]: contestantId,
+                                }))
+                              }
+                            />
+                          </div>
+                        ) : module.prediction_type === "bombshell_arrival_prediction" ? (
+                          <div className="mt-6 space-y-4">
+                            <div className="rounded-2xl border border-blue-500/25 bg-blue-500/8 p-4 text-sm text-blue-100">
+                              <div className="space-y-2">
+                                {selectedBombshellIds.map((bombshellId) => (
+                                  <p key={bombshellId}>
+                                    <span className="font-semibold">
+                                      {getContestantName(contestants, bombshellId)} goes after:
+                                    </span>{" "}
+                                    {getContestantName(
+                                      contestantOptions,
+                                      targetPickIdsByBombshell[bombshellId] ?? ""
+                                    )}
+                                  </p>
+                                ))}
+                              </div>
+                            </div>
+                            {selectedBombshellIds.length === 0 ? (
+                              <div className="rounded-2xl border border-red-500/30 bg-red-950/40 p-4 text-sm text-red-200">
+                                Admin still needs to set which bombshells this module is about before players can lock in picks.
+                              </div>
+                            ) : null}
+                            {selectedBombshellIds.map((bombshellId) => (
+                              <ContestantPicker
+                                key={bombshellId}
+                                contestants={contestants}
+                                label={`Who does ${getContestantName(contestants, bombshellId)} go after?`}
+                                helperText="Every cast member is fair game here. Pick the islander you think gets targeted first."
+                                selectedId={targetPickIdsByBombshell[bombshellId] ?? ""}
+                                onSelect={(contestantId) =>
+                                  setTargetPickIdsByModuleId((currentValue) => ({
+                                    ...currentValue,
+                                    [module.id]: {
+                                      ...(currentValue[module.id] ?? {}),
+                                      [bombshellId]: contestantId,
+                                    },
+                                  }))
+                                }
+                              />
+                            ))}
+                          </div>
+                        ) : isQuestionChallengePrediction(module.prediction_type) ? (
+                          <div className="mt-6 space-y-4">
+                            <div className="rounded-2xl border border-yellow-500/25 bg-yellow-500/8 p-4 text-sm text-yellow-100">
+                              <div className="space-y-2">
+                                {selectedRoundQuestions.map((question, index) => (
+                                  <p key={question.id}>
+                                    <span className="font-semibold">Q{index + 1}:</span> {question.question_text}
+                                    <br />
+                                    <span className="font-semibold">Your pick:</span>{" "}
+                                    {(question.answer_type ?? "islander") === "couple"
+                                      ? currentCoupleOptions.find(
+                                          (couple) => couple.value === (questionPickIdsByQuestion[question.id] ?? "")
+                                        )?.label ?? "No pick"
+                                      : getContestantName(
+                                          contestants,
+                                          questionPickIdsByQuestion[question.id] ?? ""
+                                        )}
+                                  </p>
+                                ))}
+                              </div>
+                            </div>
+                            {selectedRoundQuestions.length === 0 ? (
+                              <div className="rounded-2xl border border-red-500/30 bg-red-950/40 p-4 text-sm text-red-200">
+                                Admin still needs to add the questions for this module before players can answer.
+                              </div>
+                            ) : null}
+                            {selectedRoundQuestions.some(
+                              (question) => (question.answer_type ?? "islander") === "couple"
+                            ) && currentCoupleOptions.length === 0 ? (
+                              <div className="rounded-2xl border border-red-500/30 bg-red-950/40 p-4 text-sm text-red-200">
+                                Admin still needs to update the current villa tracker before couple-answer questions can be picked.
+                              </div>
+                            ) : null}
+                            {selectedRoundQuestions.map((question, index) => (
+                              (question.answer_type ?? "islander") === "couple" ? (
+                                <CouplePicker
+                                  key={question.id}
+                                  couples={currentCoupleOptions}
+                                  label={`Question ${index + 1}`}
+                                  helperText={question.question_text}
+                                  selectedValue={questionPickIdsByQuestion[question.id] ?? ""}
+                                  onSelect={(coupleValue) =>
+                                    setQuestionPickIdsByModuleId((currentValue) => ({
+                                      ...currentValue,
+                                      [module.id]: {
+                                        ...(currentValue[module.id] ?? {}),
+                                        [question.id]: coupleValue,
+                                      },
+                                    }))
+                                  }
+                                />
+                              ) : (
+                                <ContestantPicker
+                                  key={question.id}
+                                  contestants={contestants}
+                                  label={`Question ${index + 1}`}
+                                  helperText={question.question_text}
+                                  selectedId={questionPickIdsByQuestion[question.id] ?? ""}
+                                  onSelect={(contestantId) =>
+                                    setQuestionPickIdsByModuleId((currentValue) => ({
+                                      ...currentValue,
+                                      [module.id]: {
+                                        ...(currentValue[module.id] ?? {}),
+                                        [question.id]: contestantId,
+                                      },
+                                    }))
+                                  }
+                                />
+                              )
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-5 text-sm text-zinc-300">
+                            {isNoScoreEpisode(module.prediction_type)
+                              ? "This module is watch-only, so no picks or points are live."
+                              : "This module type does not have a player form yet."}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
-                </div>
-              ) : openRound?.prediction_type === "elimination_prediction" ? (
-                <div className="mt-6 space-y-4">
-                  <div className="grid gap-3 rounded-2xl border border-yellow-500/25 bg-yellow-500/8 p-4 text-sm text-yellow-100 sm:grid-cols-2">
-                    <p>
-                      <span className="font-semibold">Dumped pick:</span>{" "}
-                      {getContestantName(contestantOptions, dumpedPickId)}
-                    </p>
-                    <p>
-                      <span className="font-semibold">Danger pick:</span>{" "}
-                      {bottomGroupPickId
-                        ? getContestantName(contestantOptions, bottomGroupPickId)
-                        : "Optional"}
-                    </p>
-                  </div>
-                  <ContestantPicker
-                    contestants={activeContestants}
-                    label="Who gets dumped?"
-                    helperText="This is your main elimination call. Pick the islander you think is fully out."
-                    selectedId={dumpedPickId}
-                    onSelect={setDumpedPickId}
-                  />
-                  <ContestantPicker
-                    contestants={activeContestants}
-                    label="Who lands in danger but survives?"
-                    helperText="Optional partial-credit pick for someone who ends up vulnerable without getting dumped."
-                    selectedId={bottomGroupPickId}
-                    onSelect={setBottomGroupPickId}
-                  />
-                </div>
-              ) : openRound?.prediction_type === "bombshell_arrival_prediction" ? (
-                <div className="mt-6 space-y-4">
-                  <div className="rounded-2xl border border-blue-500/25 bg-blue-500/8 p-4 text-sm text-blue-100">
-                    <div className="space-y-2">
-                      {selectedBombshellIds.map((bombshellId) => (
-                        <p key={bombshellId}>
-                          <span className="font-semibold">
-                            {getContestantName(contestants, bombshellId)} goes after:
-                          </span>{" "}
-                          {getContestantName(
-                            contestantOptions,
-                            targetPickIdsByBombshell[bombshellId] ?? ""
-                          )}
-                        </p>
-                      ))}
-                    </div>
-                  </div>
-                  {selectedBombshellIds.length === 0 ? (
-                    <div className="rounded-2xl border border-red-500/30 bg-red-950/40 p-4 text-sm text-red-200">
-                      Admin still needs to set which bombshells this round is about before players can lock in picks.
-                    </div>
-                  ) : null}
-                  {selectedBombshellIds.map((bombshellId) => (
-                    <ContestantPicker
-                      key={bombshellId}
-                      contestants={contestants}
-                      label={`Who does ${getContestantName(contestants, bombshellId)} go after?`}
-                      helperText="Every cast member is fair game here. Pick the islander you think gets targeted first."
-                      selectedId={targetPickIdsByBombshell[bombshellId] ?? ""}
-                      onSelect={(contestantId) =>
-                        setTargetPickIdsByBombshell((currentValue) => ({
-                          ...currentValue,
-                          [bombshellId]: contestantId,
-                        }))
-                      }
-                    />
-                  ))}
-                </div>
-              ) : isQuestionChallengePrediction(openRound?.prediction_type ?? "") ? (
-                <div className="mt-6 space-y-4">
-                  <div className="rounded-2xl border border-yellow-500/25 bg-yellow-500/8 p-4 text-sm text-yellow-100">
-                    <div className="space-y-2">
-                      {selectedRoundQuestions.map((question, index) => (
-                        <p key={question.id}>
-                          <span className="font-semibold">Q{index + 1}:</span> {question.question_text}
-                          <br />
-                          <span className="font-semibold">Your pick:</span>{" "}
-                          {getContestantName(
-                            contestants,
-                            questionPickIdsByQuestion[question.id] ?? ""
-                          )}
-                        </p>
-                      ))}
-                    </div>
-                  </div>
-                  {selectedRoundQuestions.length === 0 ? (
-                    <div className="rounded-2xl border border-red-500/30 bg-red-950/40 p-4 text-sm text-red-200">
-                      Admin still needs to add the questions for this round before players can answer.
-                    </div>
-                  ) : null}
-                  {selectedRoundQuestions.map((question, index) => (
-                    <ContestantPicker
-                      key={question.id}
-                      contestants={contestants}
-                      label={`Question ${index + 1}`}
-                      helperText={question.question_text}
-                      selectedId={questionPickIdsByQuestion[question.id] ?? ""}
-                      onSelect={(contestantId) =>
-                        setQuestionPickIdsByQuestion((currentValue) => ({
-                          ...currentValue,
-                          [question.id]: contestantId,
-                        }))
-                      }
-                    />
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
-                <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-5 text-sm text-zinc-300">
-                  {openRound && isNoScoreEpisode(openRound.prediction_type)
-                    ? "This episode is marked as watch-only, so no predictions or points are live."
-                    : openRound
-                      ? "This round type has its own custom flow above."
-                      : "Open a round in admin to start taking predictions."}
+                <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5 text-sm text-zinc-300">
+                  Open a round in admin to start taking predictions.
                 </div>
               )}
 
@@ -1123,11 +1458,7 @@ export default function PredictPage() {
                   disabled={
                     saving ||
                     !openRound ||
-                    isNoScoreEpisode(openRound.prediction_type) ||
-                    (openRound.prediction_type === "bombshell_arrival_prediction" &&
-                      selectedBombshellIds.length === 0) ||
-                    (isQuestionChallengePrediction(openRound?.prediction_type ?? "") &&
-                      selectedRoundQuestions.length === 0)
+                    isRoundWatchOnly
                   }
                   className="rounded-full bg-pink-500 px-5 py-3 text-sm font-semibold text-black transition hover:bg-pink-400 disabled:cursor-not-allowed disabled:bg-pink-300"
                 >

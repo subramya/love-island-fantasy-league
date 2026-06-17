@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
+import { Accordion } from "@/components/Accordion";
 import {
   contestantTypeOptions,
   getContestantTypeLabel,
@@ -30,6 +31,7 @@ type Round = {
   title: string;
   status: string;
   prediction_type: string;
+  prediction_deadline?: string | null;
 };
 
 type ActualCouple = {
@@ -57,21 +59,6 @@ type RoundTrackerEntry = {
 };
 
 type VillaHistoryBoard = Record<string, Record<string, string>>;
-
-type FeedNotification = {
-  id: string;
-  user_name: string;
-  message: string;
-  message_type: string | null;
-  created_at: string;
-};
-
-type EpisodeRecap = {
-  id: string;
-  round_id: string;
-  headline: string | null;
-  recap_text: string;
-};
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
@@ -101,76 +88,6 @@ function getTrackerCellStyles(value: string) {
   return "bg-transparent text-zinc-100";
 }
 
-function formatMessageTimeEST(timestamp: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  }).format(new Date(timestamp));
-}
-
-function getCurrentEasternParts() {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-
-  const parts = formatter.formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-
-  return {
-    weekday: values.weekday,
-    year: Number(values.year),
-    month: Number(values.month),
-    day: Number(values.day),
-    hour: Number(values.hour),
-  };
-}
-
-function getEpisodeNoticeNotification(): FeedNotification | null {
-  const eastern = getCurrentEasternParts();
-  const isEpisodeDay = eastern.weekday !== "Wed" && eastern.weekday !== "Sat";
-
-  if (!isEpisodeDay) {
-    return null;
-  }
-
-  const dateLabel = `${eastern.year}-${String(eastern.month).padStart(2, "0")}-${String(
-    eastern.day
-  ).padStart(2, "0")}`;
-  const createdAt = new Date().toISOString();
-
-  if (eastern.hour < 21) {
-    return {
-      id: `episode-upcoming-${dateLabel}`,
-      user_name: "Villa Feed",
-      message_type: "system",
-      message:
-        "Episode night update: tonight’s episode starts at 9:00 PM ET. Finalize your picks before the villa opens.",
-      created_at: createdAt,
-    };
-  }
-
-  return {
-    id: `episode-live-${dateLabel}`,
-    user_name: "Villa Feed",
-    message_type: "system",
-    message:
-      "Episode is live now. Love Island starts at 9:00 PM ET tonight, so the villa chaos is officially open.",
-    created_at: createdAt,
-  };
-}
-
 function mapTrackerStateToCellValue(
   trackerState: string,
   partnerContestantId: string | null,
@@ -195,6 +112,16 @@ function mapTrackerStateToCellValue(
   return "Unknown";
 }
 
+function shortenRoundTitle(title: string) {
+  const match = title.match(/^Episode (\d+)(?::\s*(.*))?$/i);
+
+  if (!match) {
+    return title;
+  }
+
+  return `Ep ${match[1]}`;
+}
+
 export default function Home() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -205,13 +132,95 @@ export default function Home() {
   const [rounds, setRounds] = useState<Round[]>([]);
   const [partnerMap, setPartnerMap] = useState<Record<string, string>>({});
   const [villaHistoryBoard, setVillaHistoryBoard] = useState<VillaHistoryBoard>({});
-  const [recentNotifications, setRecentNotifications] = useState<FeedNotification[]>([]);
-  const [episodeRecaps, setEpisodeRecaps] = useState<EpisodeRecap[]>([]);
+  const [dumpedContestantIds, setDumpedContestantIds] = useState<string[]>([]);
+  const [expandedHistoryIds, setExpandedHistoryIds] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const visibleBoardContestants = contestants.filter(
+    (contestant) =>
+      contestant.status !== "eliminated" && !dumpedContestantIds.includes(contestant.id)
+  );
   const latestRound = rounds[rounds.length - 1] ?? null;
-  const trackerRounds = rounds.slice(-6);
-  const latestEpisodeRecap = episodeRecaps[0] ?? null;
+  const currentRound = latestRound;
+  const mobileTrackerRounds = rounds.slice(-6);
+  const desktopTrackerRounds = rounds;
+  const latestHistoryByContestantId = latestRound ? villaHistoryBoard[latestRound.id] ?? {} : {};
+  const mobileBoardContestants = contestants
+    .map((contestant) => {
+      const isDumped =
+        contestant.status === "eliminated" || dumpedContestantIds.includes(contestant.id);
+      const currentValue =
+        latestHistoryByContestantId[contestant.id] ??
+        partnerMap[contestant.id] ??
+        (isDumped
+          ? "Dumped"
+          : contestant.contestant_type === "original_islander"
+            ? "Single and vulnerable"
+            : "Not in villa");
+      const currentPartner =
+        currentValue !== "Single and vulnerable" &&
+        currentValue !== "Dumped" &&
+        currentValue !== "Not in villa" &&
+        currentValue !== "Unknown"
+          ? currentValue
+          : null;
+      const currentStatus = isDumped
+        ? "Dumped"
+        : currentPartner
+          ? "Coupled"
+          : currentValue === "Not in villa"
+            ? "Not in villa"
+            : "Single";
+
+      return {
+        ...contestant,
+        currentPartner,
+        currentStatus,
+        currentValue,
+        isDumped,
+      };
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const mobileCurrentCouples = (() => {
+    const seenPairs = new Set<string>();
+    const contestantsByName = new Map(
+      mobileBoardContestants.map((contestant) => [contestant.name, contestant])
+    );
+
+    return mobileBoardContestants.flatMap((contestant) => {
+      if (contestant.isDumped || contestant.currentStatus === "Not in villa" || !contestant.currentPartner) {
+        return [];
+      }
+
+      const partnerContestant = contestantsByName.get(contestant.currentPartner);
+      const pairKey = [contestant.id, partnerContestant?.id ?? contestant.currentPartner]
+        .sort()
+        .join(":");
+
+      if (seenPairs.has(pairKey)) {
+        return [];
+      }
+
+      seenPairs.add(pairKey);
+
+      return [
+        {
+          id: pairKey,
+          label: partnerContestant
+            ? `${contestant.name} ❤️ ${partnerContestant.name}`
+            : `${contestant.name} ❤️ ${contestant.currentPartner}`,
+          islanders: partnerContestant ? [contestant, partnerContestant] : [contestant],
+        },
+      ];
+    });
+  })();
+  const mobileSingles = mobileBoardContestants.filter(
+    (contestant) =>
+      !contestant.isDumped &&
+      contestant.currentStatus !== "Not in villa" &&
+      !contestant.currentPartner
+  );
+  const mobileDumpedIslanders = mobileBoardContestants.filter((contestant) => contestant.isDumped);
 
   useEffect(() => {
     const hydratePage = async () => {
@@ -226,8 +235,6 @@ export default function Home() {
         { data: roundResultsData },
         { data: roundBombshellsData },
         { data: trackerEntriesData },
-        { data: feedNotificationData },
-        { data: episodeRecapsData },
       ] = await Promise.all([
         supabase
           .from("contestants")
@@ -235,7 +242,7 @@ export default function Home() {
           .order("name"),
         supabase
           .from("rounds")
-          .select("id, title, status, prediction_type")
+          .select("id, title, status, prediction_type, prediction_deadline")
           .order("created_at", { ascending: true }),
         supabase
           .from("actual_couples")
@@ -249,29 +256,12 @@ export default function Home() {
         supabase
           .from("round_tracker_entries")
           .select("round_id, contestant_id, tracker_state, partner_contestant_id"),
-        supabase
-          .from("chat_messages")
-          .select("id, user_name, message_type, message, created_at")
-          .eq("message_type", "system")
-          .order("created_at", { ascending: false })
-          .limit(3),
-        supabase
-          .from("episode_recaps")
-          .select("id, round_id, headline, recap_text")
-          .order("created_at", { ascending: false }),
       ]);
 
       const nextContestants = (contestantsData ?? []) as Contestant[];
       setContestants(nextContestants);
       const nextRounds = (roundsData ?? []) as Round[];
       setRounds(nextRounds);
-      const roundOrder = new Map(nextRounds.map((round, index) => [round.id, index]));
-      setEpisodeRecaps(
-        ((episodeRecapsData ?? []) as EpisodeRecap[]).sort(
-          (left, right) =>
-            (roundOrder.get(right.round_id) ?? -1) - (roundOrder.get(left.round_id) ?? -1)
-        )
-      );
 
       const idToName = new Map(nextContestants.map((contestant) => [contestant.id, contestant.name]));
       const couplesByRoundId = ((actualCouplesData ?? []) as ActualCouple[]).reduce<
@@ -288,6 +278,13 @@ export default function Home() {
         }
         return map;
       }, {});
+      setDumpedContestantIds(
+        Array.from(
+          new Set(
+            Object.values(dumpedByRoundId).flatMap((contestantIds) => contestantIds)
+          )
+        )
+      );
       const bombshellsByRoundId = ((roundBombshellsData ?? []) as RoundBombshellRow[]).reduce<
         Record<string, string[]>
       >((map, row) => {
@@ -366,24 +363,6 @@ export default function Home() {
         }
       });
       setPartnerMap(finalPartnerMap);
-
-      const episodeNotice = getEpisodeNoticeNotification();
-      const nextNotifications = [
-        ...((feedNotificationData ?? []) as FeedNotification[]),
-        ...(episodeNotice ? [episodeNotice] : []),
-      ]
-        .sort(
-          (left, right) =>
-            new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
-        )
-        .filter(
-          (notification, index, notifications) =>
-            notifications.findIndex(
-              (currentNotification) => currentNotification.id === notification.id
-            ) === index
-        )
-        .slice(0, 3);
-      setRecentNotifications(nextNotifications);
 
       setLoadingUser(false);
     };
@@ -578,9 +557,17 @@ export default function Home() {
     setSuccessMessage("Signed out.");
   };
 
+  const toggleHistory = (contestantId: string) => {
+    setExpandedHistoryIds((currentValue) =>
+      currentValue.includes(contestantId)
+        ? currentValue.filter((currentId) => currentId !== contestantId)
+        : [...currentValue, contestantId]
+    );
+  };
+
   return (
-    <main className="min-h-screen bg-black px-6 py-10 text-zinc-100">
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
+    <main className="min-h-screen bg-black px-4 py-5 text-zinc-100 sm:px-6 sm:py-10">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 sm:gap-6">
         <section className="overflow-hidden rounded-[2rem] border border-zinc-800 bg-zinc-950 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
           <div className="relative">
             <Image
@@ -588,27 +575,17 @@ export default function Home() {
               alt="Love Island beach banner"
               width={1200}
               height={675}
-              className="h-56 w-full object-cover sm:h-72"
+              className="h-32 w-full object-cover sm:h-44"
               priority
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/25 to-transparent" />
-            <div className="absolute left-0 top-0 h-28 w-28 rounded-full bg-pink-500/25 blur-3xl" />
-            <div className="absolute right-10 top-12 h-24 w-24 rounded-full bg-sky-400/20 blur-3xl" />
-            <div className="absolute bottom-10 right-24 h-20 w-20 rounded-full bg-yellow-300/20 blur-3xl" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
           </div>
-          <div className="border-t border-zinc-800 bg-zinc-950 p-8 sm:p-10">
-            <div className="flex flex-wrap gap-2 text-xs font-semibold uppercase tracking-[0.3em]">
-              <span className="rounded-full border border-pink-400/40 bg-pink-500/10 px-3 py-1 text-pink-300">
-                Fantasy Prediction League
-              </span>
-            </div>
-            <h1 className="mt-5 text-5xl font-semibold tracking-tight sm:text-6xl">
-              Love Island Fantasy League
+          <div className="p-5 sm:p-8">
+            <h1 className="text-center text-4xl font-semibold tracking-tight sm:text-left sm:text-5xl">
+              Love Island
+              <br />
+              Fantasy League
             </h1>
-            <p className="mt-4 max-w-3xl text-lg leading-8 text-zinc-200/80">
-              Pick your dream couples, call the villa drama early, and keep tabs on
-              who is thriving, spiraling, or one text away from chaos.
-            </p>
           </div>
         </section>
 
@@ -624,48 +601,45 @@ export default function Home() {
           </section>
         ) : null}
 
-        {recentNotifications.length > 0 ? (
-          <section className="rounded-[2rem] border border-emerald-400/20 bg-zinc-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <p className="text-sm font-medium uppercase tracking-[0.3em] text-emerald-300">
-                  Latest Feed Notifications
-                </p>
-                <h2 className="mt-2 text-2xl font-semibold">What just happened in the villa</h2>
+        <section className="rounded-[2rem] border border-sky-400/20 bg-zinc-950 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.55)] sm:p-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.26em] text-sky-300">
+                Current Round
+              </p>
+              <h2 className="mt-2 text-2xl font-semibold">
+                {currentRound?.title ?? "No live round right now"}
+              </h2>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold uppercase tracking-[0.18em]">
+                <span
+                  className={`rounded-full border px-3 py-2 ${
+                    currentRound?.status === "open"
+                      ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+                      : "border-zinc-700 bg-zinc-900 text-zinc-300"
+                  }`}
+                >
+                  {currentRound?.status === "open" ? "Open for picks" : currentRound?.status ?? "Waiting"}
+                </span>
               </div>
+            </div>
+            <div className="grid w-full gap-3 sm:w-auto sm:min-w-64">
               <Link
-                href="/chat"
-                className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition hover:border-emerald-300 hover:bg-emerald-500/20"
+                href={
+                  currentRound?.status === "open"
+                    ? user
+                      ? "/predict"
+                      : "/profile"
+                    : "/leaderboard"
+                }
+                className="flex min-h-12 items-center justify-center rounded-2xl bg-sky-400 px-4 text-base font-semibold text-black transition hover:bg-sky-300"
               >
-                Open Villa Feed
+                {currentRound?.status === "open" ? "Make picks" : "View results"}
               </Link>
             </div>
+          </div>
+        </section>
 
-            <div className="mt-5 grid gap-3">
-              {recentNotifications.map((notification) => (
-                <article
-                  key={notification.id}
-                  className="rounded-3xl border border-emerald-400/20 bg-emerald-500/8 p-4"
-                >
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex items-center gap-2">
-                      <p className="font-semibold text-zinc-100">{notification.user_name}</p>
-                      <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-100">
-                        Admin
-                      </span>
-                    </div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">
-                      {formatMessageTimeEST(notification.created_at)}
-                    </p>
-                  </div>
-                  <p className="mt-3 text-sm leading-7 text-zinc-300">{notification.message}</p>
-                </article>
-              ))}
-            </div>
-          </section>
-        ) : null}
-
-        <section className="rounded-[2rem] border border-zinc-800 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
+        <section className="hidden rounded-[2rem] border border-zinc-800 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)] md:block">
           <div className="max-w-3xl">
             <p className="text-sm font-medium uppercase tracking-[0.3em] text-pink-300">
               Love Island Basics
@@ -783,198 +757,14 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="grid gap-6 md:grid-cols-[1.05fr_0.95fr]">
-          <div className="rounded-[2rem] border border-pink-500/25 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
-            {user ? (
-              <>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-2xl font-semibold">Player profile</h2>
-                    <p className="mt-2 text-sm leading-6 text-zinc-400">
-                      Keep your league name and alert email tidy here.
-                    </p>
-                  </div>
-                  <div className="rounded-full border border-pink-400/30 bg-pink-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-pink-200">
-                    Signed in
-                  </div>
-                </div>
-
-                <div className="mt-6 grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-3xl border border-zinc-800 bg-zinc-900/70 p-5">
-                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
-                      Display name
-                    </p>
-                    <p className="mt-3 text-xl font-semibold text-zinc-100">{user.name}</p>
-                  </div>
-                  <div className="rounded-3xl border border-zinc-800 bg-zinc-900/70 p-5">
-                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
-                      Alert status
-                    </p>
-                    <p className="mt-3 text-sm text-zinc-300">
-                      {user.email ? "Email alerts are live" : "No alert email saved yet"}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-6 rounded-3xl border border-zinc-800 bg-zinc-900/70 p-5">
-                  <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
-                    Alert email
-                    <input
-                      type="email"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      placeholder="you@example.com"
-                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-sky-400"
-                    />
-                  </label>
-                  <p className="mt-3 text-xs leading-6 text-zinc-500">
-                    {user.email
-                      ? `Current alerts go to ${user.email}.`
-                      : "Add an email here if you want new round alerts and easier profile recovery later."}
-                  </p>
-                  <div className="mt-4 flex flex-wrap gap-3">
-                    <button
-                      type="button"
-                      onClick={handleSaveEmail}
-                      disabled={submitting}
-                      className="rounded-full border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-100 transition hover:border-sky-300 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {submitting ? "Saving..." : "Save alert email"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleSignOut}
-                      className="rounded-full border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-semibold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800"
-                    >
-                      Sign out
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <h2 className="text-2xl font-semibold">Log in</h2>
-                <p className="mt-2 text-sm leading-6 text-zinc-400">
-                  Claim your name, and optionally add an email so new round alerts can land in your inbox.
-                </p>
-
-                <form onSubmit={handleLogin} className="mt-6 flex flex-col gap-4">
-                  <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
-                    Display name
-                    <input
-                      type="text"
-                      value={name}
-                      onChange={(event) => setName(event.target.value)}
-                      placeholder="Name"
-                      className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-yellow-300"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
-                    Email for round alerts
-                    <input
-                      type="email"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      placeholder="you@example.com"
-                      className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-sky-400"
-                    />
-                    <span className="text-xs text-zinc-500">
-                      Optional, but if you use the same email later we can log you back into the same profile.
-                    </span>
-                  </label>
-
-                  <button
-                    type="submit"
-                    disabled={submitting}
-                    className="inline-flex items-center justify-center rounded-full bg-gradient-to-r from-pink-500 via-fuchsia-500 to-yellow-300 px-5 py-3 text-sm font-semibold text-black transition hover:from-pink-400 hover:via-sky-400 hover:to-yellow-200 disabled:cursor-not-allowed disabled:from-pink-300 disabled:to-yellow-200"
-                  >
-                    {submitting ? "Logging in..." : "Continue"}
-                  </button>
-                </form>
-              </>
-            )}
-          </div>
-
-          <div className="rounded-[2rem] border border-sky-400/25 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
-            <h2 className="text-2xl font-semibold">League access</h2>
-            {loadingUser ? (
-              <p className="mt-3 text-sm text-zinc-400">Checking your local login...</p>
-            ) : user ? (
-              <>
-                <p className="mt-3 text-sm leading-6 text-zinc-400">
-                  Signed in as <span className="font-semibold text-zinc-100">{user.name}</span>. Jump straight into the villa.
-                </p>
-                <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
-                      Status
-                    </p>
-                    <p className="mt-2 text-sm font-medium text-zinc-100">Ready to play</p>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
-                      Alerts
-                    </p>
-                    <p className="mt-2 text-sm font-medium text-zinc-100">
-                      {user.email ? "Email on file" : "Not set"}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-6 grid gap-3 sm:grid-cols-2">
-                  <Link
-                    href="/dashboard"
-                    className="rounded-3xl bg-pink-500 px-5 py-4 text-center text-sm font-semibold text-black transition hover:bg-pink-400"
-                  >
-                    Dashboard
-                  </Link>
-                  <Link
-                    href="/predict"
-                    className="rounded-3xl border border-sky-400/30 bg-sky-500/10 px-5 py-4 text-center text-sm font-semibold text-sky-100 transition hover:border-sky-300 hover:bg-sky-500/20"
-                  >
-                    Prediction Rounds
-                  </Link>
-                  <Link
-                    href="/leaderboard"
-                    className="rounded-3xl border border-yellow-300/30 bg-yellow-300/10 px-5 py-4 text-center text-sm font-semibold text-yellow-100 transition hover:border-yellow-200 hover:bg-yellow-300/20"
-                  >
-                    Leaderboard
-                  </Link>
-                  <Link
-                    href="/chat"
-                    className="rounded-3xl border border-emerald-400/30 bg-emerald-500/10 px-5 py-4 text-center text-sm font-semibold text-emerald-100 transition hover:border-emerald-300 hover:bg-emerald-500/20"
-                  >
-                    Villa Feed
-                  </Link>
-                </div>
-                <div className="mt-3">
-                  <Link
-                    href="/admin"
-                    className="block w-full rounded-3xl border border-zinc-700 bg-zinc-900 px-5 py-4 text-center text-sm font-semibold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800"
-                  >
-                    Admin
-                  </Link>
-                </div>
-              </>
-            ) : (
-              <p className="mt-3 text-sm leading-6 text-zinc-400">
-                Once you enter your name or email, quick links to the dashboard, prediction form,
-                leaderboard, and admin page will appear here.
-              </p>
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-[2rem] border border-yellow-300/20 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
+        <section
+          id="villa-board"
+          className="rounded-[2rem] border border-yellow-300/20 bg-zinc-950 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.55)] sm:p-8"
+        >
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <p className="text-sm font-medium uppercase tracking-[0.3em] text-yellow-200">
-                Villa Update Board
-              </p>
-              <h2 className="mt-2 text-3xl font-semibold">Coupling and elimination history</h2>
-              <p className="mt-3 max-w-3xl text-sm leading-7 text-zinc-400">
-                A timeline view of how the villa has shifted from round to round, with
-                singles, dumpings, and confirmed couples all tracked in one place.
+              <p className="text-2xl font-semibold text-zinc-100">
+                Villa Status
               </p>
             </div>
             <div className="rounded-full border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-100">
@@ -982,7 +772,365 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mt-6 overflow-x-auto rounded-[1.5rem] border border-zinc-800">
+          <div className="mt-6 md:hidden">
+            {mobileCurrentCouples.length > 0 ||
+            mobileSingles.length > 0 ||
+            mobileDumpedIslanders.length > 0 ? (
+              <div className="space-y-5">
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-lg font-semibold text-zinc-100">Current Couples</h3>
+                    <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-300">
+                      {mobileCurrentCouples.length}
+                    </span>
+                  </div>
+
+                  {mobileCurrentCouples.length > 0 ? (
+                    mobileCurrentCouples.map((couple) => (
+                      <article
+                        key={`mobile-couple-${couple.id}`}
+                        className="rounded-[1.7rem] border border-zinc-800 bg-zinc-900/80 p-3.5"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-zinc-100">{couple.label}</p>
+                          <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-100">
+                            Coupled
+                          </span>
+                        </div>
+
+                        <div className="mt-3 space-y-2.5">
+                          {couple.islanders.map((contestant) => {
+                            const typeStyles = getContestantTypeStyles(contestant.contestant_type);
+
+                            return (
+                              <div
+                                key={`${couple.id}-${contestant.id}`}
+                                className={`rounded-[1.35rem] border border-zinc-800 p-3 ${typeStyles.rowClassName}`}
+                              >
+                                <div className="flex items-start gap-3">
+                                  <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
+                                    {contestant.image_url ? (
+                                      <Image
+                                        src={contestant.image_url}
+                                        alt={contestant.name}
+                                        fill
+                                        className="object-cover"
+                                      />
+                                    ) : null}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <p className="truncate text-[15px] font-semibold text-zinc-100">
+                                        {contestant.name}
+                                      </p>
+                                      <span
+                                        className={`rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${typeStyles.badgeClassName}`}
+                                      >
+                                        {getContestantTypeLabel(contestant.contestant_type)}
+                                      </span>
+                                    </div>
+                                    <div className="mt-2 space-y-1 text-sm text-zinc-300">
+                                      <p>
+                                        Status:{" "}
+                                        <span className="font-semibold text-zinc-100">Coupled</span>
+                                      </p>
+                                      <p>
+                                        Partner:{" "}
+                                        <span className="font-semibold text-zinc-100">
+                                          {contestant.currentPartner ?? "None"}
+                                        </span>
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => toggleHistory(contestant.id)}
+                                  className="mt-3 flex min-h-11 w-full items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950/80 px-4 text-sm font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-900"
+                                >
+                                  {expandedHistoryIds.includes(contestant.id)
+                                    ? "Hide History"
+                                    : "View History"}
+                                </button>
+
+                                {expandedHistoryIds.includes(contestant.id) ? (
+                                  <div className="mt-3 space-y-2">
+                                    {mobileTrackerRounds.length > 0 ? (
+                                      mobileTrackerRounds.map((round) => {
+                                        const cellValue =
+                                          villaHistoryBoard[round.id]?.[contestant.id] ??
+                                          (contestant.contestant_type === "original_islander"
+                                            ? "Single and vulnerable"
+                                            : "Not in villa");
+
+                                        return (
+                                          <div
+                                            key={`${contestant.id}-${round.id}-history`}
+                                            className="rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-2.5"
+                                          >
+                                            <div className="flex items-center justify-between gap-3">
+                                              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                                                {shortenRoundTitle(round.title)}
+                                              </p>
+                                              <p className="truncate text-xs text-zinc-500">
+                                                {round.title}
+                                              </p>
+                                            </div>
+                                            <p className="mt-1 text-sm text-zinc-200">{cellValue}</p>
+                                          </div>
+                                        );
+                                      })
+                                    ) : (
+                                      <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-400">
+                                        No round data yet.
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </article>
+                    ))
+                  ) : (
+                    <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
+                      No confirmed couples yet.
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-lg font-semibold text-zinc-100">Singles</h3>
+                    <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-300">
+                      {mobileSingles.length}
+                    </span>
+                  </div>
+
+                  {mobileSingles.length > 0 ? (
+                    mobileSingles.map((contestant) => {
+                      const typeStyles = getContestantTypeStyles(contestant.contestant_type);
+
+                      return (
+                        <article
+                          key={`mobile-single-${contestant.id}`}
+                          className={`rounded-[1.6rem] border border-zinc-800 p-3.5 ${typeStyles.rowClassName}`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
+                              {contestant.image_url ? (
+                                <Image
+                                  src={contestant.image_url}
+                                  alt={contestant.name}
+                                  fill
+                                  className="object-cover"
+                                />
+                              ) : null}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="truncate text-base font-semibold text-zinc-100">
+                                  {contestant.name}
+                                </p>
+                                <span className="shrink-0 rounded-full border border-fuchsia-400/30 bg-fuchsia-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-fuchsia-100">
+                                  Single
+                                </span>
+                              </div>
+
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                <span
+                                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${typeStyles.badgeClassName}`}
+                                >
+                                  {getContestantTypeLabel(contestant.contestant_type)}
+                                </span>
+                              </div>
+
+                              <div className="mt-3 space-y-1 text-sm text-zinc-300">
+                                <p>
+                                  Current status:{" "}
+                                  <span className="font-semibold text-zinc-100">Single and vulnerable</span>
+                                </p>
+                                <p>
+                                  Current partner:{" "}
+                                  <span className="font-semibold text-zinc-100">None</span>
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => toggleHistory(contestant.id)}
+                            className="mt-4 flex min-h-11 w-full items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950/80 px-4 text-sm font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-900"
+                          >
+                            {expandedHistoryIds.includes(contestant.id) ? "Hide History" : "View History"}
+                          </button>
+
+                          {expandedHistoryIds.includes(contestant.id) ? (
+                            <div className="mt-3 space-y-2">
+                              {mobileTrackerRounds.length > 0 ? (
+                                mobileTrackerRounds.map((round) => {
+                                  const cellValue =
+                                    villaHistoryBoard[round.id]?.[contestant.id] ??
+                                    (contestant.contestant_type === "original_islander"
+                                      ? "Single and vulnerable"
+                                      : "Not in villa");
+
+                                  return (
+                                    <div
+                                      key={`${contestant.id}-${round.id}-history`}
+                                      className="rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-2.5"
+                                    >
+                                      <div className="flex items-center justify-between gap-3">
+                                        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                                          {shortenRoundTitle(round.title)}
+                                        </p>
+                                        <p className="truncate text-xs text-zinc-500">
+                                          {round.title}
+                                        </p>
+                                      </div>
+                                      <p className="mt-1 text-sm text-zinc-200">{cellValue}</p>
+                                    </div>
+                                  );
+                                })
+                              ) : (
+                                <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-400">
+                                  No round data yet.
+                                </div>
+                              )}
+                            </div>
+                          ) : null}
+                        </article>
+                      );
+                    })
+                  ) : (
+                    <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
+                      No singles right now.
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-lg font-semibold text-zinc-100">Dumped Islanders</h3>
+                    <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-300">
+                      {mobileDumpedIslanders.length}
+                    </span>
+                  </div>
+
+                  {mobileDumpedIslanders.length > 0 ? (
+                    mobileDumpedIslanders.map((contestant) => {
+                      const typeStyles = getContestantTypeStyles(contestant.contestant_type);
+
+                      return (
+                        <article
+                          key={`mobile-dumped-${contestant.id}`}
+                          className={`rounded-[1.6rem] border border-zinc-800 p-3.5 ${typeStyles.rowClassName}`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
+                              {contestant.image_url ? (
+                                <Image
+                                  src={contestant.image_url}
+                                  alt={contestant.name}
+                                  fill
+                                  className="object-cover"
+                                />
+                              ) : null}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="truncate text-base font-semibold text-zinc-100">
+                                  {contestant.name}
+                                </p>
+                                <span className="shrink-0 rounded-full border border-red-400/30 bg-red-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-red-100">
+                                  Dumped
+                                </span>
+                              </div>
+
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                <span
+                                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${typeStyles.badgeClassName}`}
+                                >
+                                  {getContestantTypeLabel(contestant.contestant_type)}
+                                </span>
+                              </div>
+
+                              <div className="mt-3 space-y-1 text-sm text-zinc-300">
+                                <p>
+                                  Current status:{" "}
+                                  <span className="font-semibold text-zinc-100">Dumped</span>
+                                </p>
+                                <p>
+                                  Current partner:{" "}
+                                  <span className="font-semibold text-zinc-100">None</span>
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => toggleHistory(contestant.id)}
+                            className="mt-4 flex min-h-11 w-full items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950/80 px-4 text-sm font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-900"
+                          >
+                            {expandedHistoryIds.includes(contestant.id) ? "Hide History" : "View History"}
+                          </button>
+
+                          {expandedHistoryIds.includes(contestant.id) ? (
+                            <div className="mt-3 space-y-2">
+                              {mobileTrackerRounds.length > 0 ? (
+                                mobileTrackerRounds.map((round) => {
+                                  const cellValue =
+                                    villaHistoryBoard[round.id]?.[contestant.id] ??
+                                    (contestant.contestant_type === "original_islander"
+                                      ? "Single and vulnerable"
+                                      : "Not in villa");
+
+                                  return (
+                                    <div
+                                      key={`${contestant.id}-${round.id}-history`}
+                                      className="rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-2.5"
+                                    >
+                                      <div className="flex items-center justify-between gap-3">
+                                        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                                          {shortenRoundTitle(round.title)}
+                                        </p>
+                                        <p className="truncate text-xs text-zinc-500">
+                                          {round.title}
+                                        </p>
+                                      </div>
+                                      <p className="mt-1 text-sm text-zinc-200">{cellValue}</p>
+                                    </div>
+                                  );
+                                })
+                              ) : (
+                                <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-400">
+                                  No round data yet.
+                                </div>
+                              )}
+                            </div>
+                          ) : null}
+                        </article>
+                      );
+                    })
+                  ) : (
+                    <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
+                      No one has been dumped yet.
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5 text-sm text-zinc-400">
+                Add contestants in admin to start filling the villa board.
+              </div>
+            )}
+          </div>
+
+          <div className="mt-6 hidden overflow-x-auto rounded-[1.5rem] border border-zinc-800 md:block">
             <table className="min-w-[980px] border-collapse text-center">
               <thead>
                 <tr className="bg-zinc-900 text-sm text-zinc-300">
@@ -990,7 +1138,7 @@ export default function Home() {
                     Islander
                   </th>
                   <th
-                    colSpan={Math.max(trackerRounds.length, 1)}
+                    colSpan={Math.max(desktopTrackerRounds.length, 1)}
                     className="border-b border-r border-zinc-800 px-4 py-3 font-semibold"
                   >
                     Round history
@@ -1000,8 +1148,8 @@ export default function Home() {
                   </th>
                 </tr>
                 <tr className="bg-zinc-900 text-sm text-zinc-400">
-                  {trackerRounds.length > 0 ? (
-                    trackerRounds.map((round) => (
+                  {desktopTrackerRounds.length > 0 ? (
+                    desktopTrackerRounds.map((round) => (
                       <th
                         key={round.id}
                         className="border-b border-r border-zinc-800 px-4 py-3 font-semibold"
@@ -1017,8 +1165,8 @@ export default function Home() {
                 </tr>
               </thead>
               <tbody>
-                {contestants.length > 0 ? (
-                  contestants.map((contestant) => {
+            {visibleBoardContestants.length > 0 ? (
+                  visibleBoardContestants.map((contestant) => {
                     const typeStyles = getContestantTypeStyles(contestant.contestant_type);
                     const finalState =
                       partnerMap[contestant.id] ??
@@ -1048,8 +1196,8 @@ export default function Home() {
                             </div>
                           </div>
                         </td>
-                        {trackerRounds.length > 0 ? (
-                          trackerRounds.map((round) => {
+                        {desktopTrackerRounds.length > 0 ? (
+                          desktopTrackerRounds.map((round) => {
                             const cellValue =
                               villaHistoryBoard[round.id]?.[contestant.id] ??
                               (contestant.contestant_type === "original_islander"
@@ -1085,7 +1233,7 @@ export default function Home() {
                 ) : (
                   <tr>
                     <td
-                      colSpan={trackerRounds.length + 2}
+                      colSpan={desktopTrackerRounds.length + 2}
                       className="px-4 py-10 text-center text-sm text-zinc-400"
                     >
                       Add contestants in admin to start filling the villa board.
@@ -1135,27 +1283,75 @@ export default function Home() {
 
         </section>
 
-        {latestEpisodeRecap ? (
-          <section className="rounded-[2rem] border border-sky-400/20 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
-            <div className="max-w-4xl">
-              <p className="text-sm font-medium uppercase tracking-[0.3em] text-sky-300">
-                Latest Episode Recap
-              </p>
-              <h2 className="mt-2 text-3xl font-semibold">
-                {latestEpisodeRecap.headline?.trim() ||
-                  rounds.find((round) => round.id === latestEpisodeRecap.round_id)?.title ||
-                  "Episode recap"}
-              </h2>
-              <p className="mt-2 text-sm font-semibold uppercase tracking-[0.2em] text-zinc-500">
-                {rounds.find((round) => round.id === latestEpisodeRecap.round_id)?.title ??
-                  "Latest round"}
-              </p>
-              <p className="mt-4 text-sm leading-7 text-zinc-300">
-                {latestEpisodeRecap.recap_text}
-              </p>
+        <section className="space-y-3 md:hidden">
+          <Accordion title="Love Island Basics" label="Quick Context">
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-pink-400/20 bg-pink-500/10 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-pink-200">Couple up</p>
+                <p className="mt-2 text-sm leading-6 text-zinc-300">
+                  Islanders pair up fast, but recouplings can flip everything in a single night.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-sky-400/20 bg-sky-500/10 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-100">Bombshells</p>
+                <p className="mt-2 text-sm leading-6 text-zinc-300">
+                  New arrivals tempt, steal, and change the whole villa math.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-yellow-100">Dumpings</p>
+                <p className="mt-2 text-sm leading-6 text-zinc-300">
+                  Singles or shaky couples can get dumped once the stakes rise.
+                </p>
+              </div>
             </div>
-          </section>
-        ) : null}
+          </Accordion>
+
+          <Accordion title="How to play" label="Three Steps">
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+                <p className="text-sm font-semibold text-zinc-100">1. Log in</p>
+                <p className="mt-2 text-sm leading-6 text-zinc-400">
+                  Claim your player name and save your alert email if you want updates.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+                <p className="text-sm font-semibold text-zinc-100">2. Predict the current round</p>
+                <p className="mt-2 text-sm leading-6 text-zinc-400">
+                  Every episode gets a round, and the prediction type changes with the villa drama.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+                <p className="text-sm font-semibold text-zinc-100">3. Watch the leaderboard move</p>
+                <p className="mt-2 text-sm leading-6 text-zinc-400">
+                  Scores update after each episode once the real outcomes are entered and scored.
+                </p>
+              </div>
+            </div>
+          </Accordion>
+
+          <Accordion title="Points by round" label="Scoring">
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-pink-400/20 bg-pink-500/10 p-4">
+                <p className="text-sm font-semibold text-pink-200">Recoupling</p>
+                <p className="mt-2 text-sm text-zinc-300/80">Exact match +5, partial match +2.</p>
+              </div>
+              <div className="rounded-2xl border border-sky-400/20 bg-sky-500/10 p-4">
+                <p className="text-sm font-semibold text-sky-100">Elimination</p>
+                <p className="mt-2 text-sm text-zinc-300/80">Dumped islander +5, second question +2.</p>
+              </div>
+              <div className="rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-4">
+                <p className="text-sm font-semibold text-yellow-100">Bombshell</p>
+                <p className="mt-2 text-sm text-zinc-300/80">Correct target is +5 for each bombshell.</p>
+              </div>
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+                <p className="text-sm font-semibold text-zinc-100">No-score</p>
+                <p className="mt-2 text-sm text-zinc-300/80">Watch-only episode, no points awarded.</p>
+              </div>
+            </div>
+          </Accordion>
+        </section>
+
       </div>
     </main>
   );

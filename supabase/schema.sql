@@ -19,9 +19,19 @@ create table if not exists rounds (
   created_at timestamp default now()
 );
 
+create table if not exists round_prediction_modules (
+  id uuid primary key default gen_random_uuid(),
+  round_id uuid not null references rounds(id),
+  prediction_type text not null,
+  title text,
+  sort_order int default 0,
+  created_at timestamp default now()
+);
+
 create table if not exists round_bombshells (
   id uuid primary key default gen_random_uuid(),
   round_id uuid references rounds(id),
+  module_id uuid references round_prediction_modules(id),
   bombshell_contestant_id uuid references contestants(id),
   created_at timestamp default now()
 );
@@ -29,7 +39,9 @@ create table if not exists round_bombshells (
 create table if not exists round_questions (
   id uuid primary key default gen_random_uuid(),
   round_id uuid references rounds(id),
+  module_id uuid references round_prediction_modules(id),
   question_text text not null,
+  answer_type text default 'islander',
   question_order int default 0,
   created_at timestamp default now()
 );
@@ -63,6 +75,7 @@ create table if not exists predictions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references league_users(id),
   round_id uuid references rounds(id),
+  module_id uuid references round_prediction_modules(id),
   prediction_role text,
   round_question_id uuid references round_questions(id),
   bombshell_contestant_id uuid references contestants(id),
@@ -74,6 +87,7 @@ create table if not exists predictions (
 create table if not exists actual_couples (
   id uuid primary key default gen_random_uuid(),
   round_id uuid references rounds(id),
+  module_id uuid references round_prediction_modules(id),
   contestant_1_id uuid references contestants(id),
   contestant_2_id uuid references contestants(id),
   created_at timestamp default now()
@@ -82,10 +96,12 @@ create table if not exists actual_couples (
 create table if not exists round_results (
   id uuid primary key default gen_random_uuid(),
   round_id uuid references rounds(id),
+  module_id uuid references round_prediction_modules(id),
   result_type text not null,
   round_question_id uuid references round_questions(id),
   bombshell_contestant_id uuid references contestants(id),
   contestant_id uuid references contestants(id),
+  contestant_2_id uuid references contestants(id),
   created_at timestamp default now()
 );
 
