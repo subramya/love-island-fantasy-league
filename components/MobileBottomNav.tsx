@@ -124,8 +124,12 @@ export function MobileBottomNav() {
   const activeNavItems = isAdminPage ? adminNavItems : navItems;
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-zinc-800/80 bg-black/95 px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3 backdrop-blur md:hidden">
-      <div className={`mx-auto grid max-w-xl gap-2 ${isAdminPage ? "grid-cols-4" : "grid-cols-5"}`}>
+    <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-zinc-800/80 bg-black/95 px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3 backdrop-blur">
+      <div
+        className={`mx-auto grid max-w-xl gap-2 ${
+          isAdminPage ? "grid-cols-4" : "grid-cols-5"
+        } md:max-w-2xl`}
+      >
         {activeNavItems.map((item) => {
           const isActive = isAdminPage
             ? pathname === item.href
@@ -139,7 +143,7 @@ export function MobileBottomNav() {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex min-h-12 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-center text-[10px] font-semibold transition ${
+              className={`flex min-h-12 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-center text-[10px] font-semibold transition md:min-h-14 md:text-xs ${
                 isActive
                   ? "bg-pink-500 text-black"
                   : "border border-zinc-800 bg-zinc-950 text-zinc-300"

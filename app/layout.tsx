@@ -29,7 +29,7 @@ export default function RootLayout({
       className={`${inter.variable} ${jetBrainsMono.variable} h-full antialiased`}
     >
       <body className="min-h-full overflow-x-hidden flex flex-col bg-black text-zinc-100">
-        <div className="flex-1 pb-24 md:pb-0">{children}</div>
+        <div className="flex-1 pb-24 md:pb-28">{children}</div>
         <MobileBottomNav />
         <footer className="border-t border-zinc-900 bg-black px-6 py-6 text-center">
           <p className="text-sm text-zinc-500">Created by Ramya Subramanian</p>
