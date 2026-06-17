@@ -106,6 +106,8 @@ type QuestionPrompt = {
   answerType: "islander" | "couple";
 };
 
+const NO_SCORE_OPTION = "__no_score__";
+
 type AdminViewMode = "alerts" | "rounds" | "islanders" | "tracker";
 
 function createEmptyCoupleRow(rowId: number): CoupleFormRow {
@@ -558,11 +560,16 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
         );
         setActualQuestionAnswerIdsByQuestion(
           typedResults.reduce<Record<string, string>>((map, result) => {
-            if (
-              result.result_type === "question_pick" &&
-              result.round_question_id &&
-              result.contestant_id
-            ) {
+            if (result.result_type === "question_pick" && result.round_question_id) {
+              if (!result.contestant_id && !result.contestant_2_id) {
+                map[result.round_question_id] = NO_SCORE_OPTION;
+                return map;
+              }
+
+              if (!result.contestant_id) {
+                return map;
+              }
+
               map[result.round_question_id] = result.contestant_2_id
                 ? [result.contestant_id, result.contestant_2_id].sort().join(":")
                 : result.contestant_id;
@@ -1399,18 +1406,23 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
     const { error: insertError } = await supabase.from("round_results").insert(
       roundQuestions.map((question) => {
         const selectedAnswer = actualQuestionAnswerIdsByQuestion[question.id];
+        const isNoScore = selectedAnswer === NO_SCORE_OPTION;
         const isCoupleAnswer = (question.answer_type ?? "islander") === "couple";
-        const coupleAnswer = isCoupleAnswer ? parseCoupleValue(selectedAnswer) : null;
+        const coupleAnswer = isCoupleAnswer && !isNoScore ? parseCoupleValue(selectedAnswer) : null;
 
         return {
           round_id: selectedActualRoundId,
           module_id: selectedActualModule.id,
           result_type: "question_pick",
           round_question_id: question.id,
-          contestant_id: isCoupleAnswer
+          contestant_id: isNoScore
+            ? null
+            : isCoupleAnswer
             ? coupleAnswer?.contestant1Id ?? null
             : selectedAnswer,
-          contestant_2_id: isCoupleAnswer
+          contestant_2_id: isNoScore
+            ? null
+            : isCoupleAnswer
             ? coupleAnswer?.contestant2Id ?? null
             : null,
         };
@@ -2972,6 +2984,7 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                           className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
                         >
                           <option value="">Select the correct current couple</option>
+                          <option value={NO_SCORE_OPTION}>No-score for this question</option>
                           {currentCoupleOptions.map((couple) => (
                             <option key={couple.value} value={couple.value}>
                               {couple.label}
@@ -2990,6 +3003,7 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                           className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition focus:border-sky-400"
                         >
                           <option value="">Select the correct islander</option>
+                          <option value={NO_SCORE_OPTION}>No-score for this question</option>
                           {contestants.map((contestant) => (
                             <option key={contestant.id} value={contestant.id}>
                               {contestant.name}
@@ -3012,6 +3026,9 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                 >
                   Save question challenge answers
                 </button>
+                <p className="text-sm text-zinc-400">
+                  If an answer never gets revealed, choose <span className="font-semibold text-zinc-200">No-score for this question</span> and everyone will get +0 for that prompt.
+                </p>
               </div>
             ) : null}
 

@@ -159,7 +159,6 @@ export default function Home() {
   const latestRound = rounds[rounds.length - 1] ?? null;
   const currentRound = latestRound;
   const mobileTrackerRounds = rounds.slice(-6);
-  const desktopTrackerRounds = rounds;
   const latestHistoryByContestantId = latestRound ? villaHistoryBoard[latestRound.id] ?? {} : {};
   const mobileBoardContestants = contestants
     .map((contestant) => {
@@ -788,7 +787,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mt-6 md:hidden">
+          <div className="mx-auto mt-6 max-w-4xl">
             {mobileCurrentCouples.length > 0 ||
             mobileSingles.length > 0 ||
             mobileDumpedIslanders.length > 0 ? (
@@ -802,7 +801,8 @@ export default function Home() {
                   </div>
 
                   {mobileCurrentCouples.length > 0 ? (
-                    mobileCurrentCouples.map((couple) => (
+                    <div className="space-y-3">
+                      {mobileCurrentCouples.map((couple) => (
                       <article
                         key={`mobile-couple-${couple.id}`}
                         className="rounded-[1.7rem] border border-zinc-800 bg-zinc-900/80 p-3.5"
@@ -881,10 +881,10 @@ export default function Home() {
                                             : "Not in villa");
 
                                         return (
-                                          <div
-                                            key={`${contestant.id}-${round.id}-history`}
-                                            className="rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-2.5"
-                                          >
+                                        <div
+                                          key={`${contestant.id}-${round.id}-history`}
+                                          className="rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-2.5"
+                                        >
                                             <div className="flex items-center justify-between gap-3">
                                               <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
                                                 {shortenRoundTitle(round.title)}
@@ -909,7 +909,8 @@ export default function Home() {
                           })}
                         </div>
                       </article>
-                    ))
+                    ))}
+                    </div>
                   ) : (
                     <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
                       No confirmed couples yet.
@@ -926,7 +927,8 @@ export default function Home() {
                   </div>
 
                   {mobileSingles.length > 0 ? (
-                    mobileSingles.map((contestant) => {
+                    <div className="space-y-3">
+                    {mobileSingles.map((contestant) => {
                       const typeStyles = getContestantTypeStyles(contestant.contestant_type);
 
                       return (
@@ -1020,7 +1022,8 @@ export default function Home() {
                           ) : null}
                         </article>
                       );
-                    })
+                    })}
+                    </div>
                   ) : (
                     <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
                       No singles right now.
@@ -1037,7 +1040,8 @@ export default function Home() {
                   </div>
 
                   {mobileDumpedIslanders.length > 0 ? (
-                    mobileDumpedIslanders.map((contestant) => {
+                    <div className="space-y-3">
+                    {mobileDumpedIslanders.map((contestant) => {
                       const typeStyles = getContestantTypeStyles(contestant.contestant_type);
 
                       return (
@@ -1131,7 +1135,8 @@ export default function Home() {
                           ) : null}
                         </article>
                       );
-                    })
+                    })}
+                    </div>
                   ) : (
                     <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
                       No one has been dumped yet.
@@ -1146,121 +1151,7 @@ export default function Home() {
             )}
           </div>
 
-          <div className="mt-6 hidden overflow-x-auto rounded-[1.5rem] border border-zinc-800 md:block">
-            <table className="min-w-[980px] border-collapse text-center">
-              <thead>
-                <tr className="bg-zinc-900 text-sm text-zinc-300">
-                  <th rowSpan={2} className="border-b border-r border-zinc-800 px-4 py-3 text-left font-semibold">
-                    Islander
-                  </th>
-                  <th
-                    colSpan={Math.max(desktopTrackerRounds.length, 1)}
-                    className="border-b border-r border-zinc-800 px-4 py-3 font-semibold"
-                  >
-                    Round history
-                  </th>
-                  <th rowSpan={2} className="border-b border-zinc-800 px-4 py-3 font-semibold">
-                    Final
-                  </th>
-                </tr>
-                <tr className="bg-zinc-900 text-sm text-zinc-400">
-                  {desktopTrackerRounds.length > 0 ? (
-                    desktopTrackerRounds.map((round) => (
-                      <th
-                        key={round.id}
-                        className="border-b border-r border-zinc-800 px-4 py-3 font-semibold"
-                      >
-                        {round.title}
-                      </th>
-                    ))
-                  ) : (
-                    <th className="border-b border-r border-zinc-800 px-4 py-3 font-semibold">
-                      Waiting for rounds
-                    </th>
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-            {visibleBoardContestants.length > 0 ? (
-                  visibleBoardContestants.map((contestant) => {
-                    const typeStyles = getContestantTypeStyles(contestant.contestant_type);
-                    const finalState =
-                      partnerMap[contestant.id] ??
-                      (contestant.status === "eliminated"
-                        ? "Dumped"
-                        : "Single and vulnerable");
-
-                    return (
-                      <tr key={contestant.id} className={typeStyles.rowClassName}>
-                        <td className="border-b border-r border-zinc-900 px-4 py-4 font-semibold text-zinc-100">
-                          <div className="flex items-center gap-3">
-                            <div className="relative h-12 w-12 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
-                              {contestant.image_url ? (
-                                <Image
-                                  src={contestant.image_url}
-                                  alt={contestant.name}
-                                  fill
-                                  className="object-cover"
-                                />
-                              ) : null}
-                            </div>
-                            <div className="min-w-0">
-                              <p>{contestant.name}</p>
-                              <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
-                                {getContestantTypeLabel(contestant.contestant_type)}
-                              </p>
-                            </div>
-                          </div>
-                        </td>
-                        {desktopTrackerRounds.length > 0 ? (
-                          desktopTrackerRounds.map((round) => {
-                            const cellValue =
-                              villaHistoryBoard[round.id]?.[contestant.id] ??
-                              (contestant.contestant_type === "original_islander"
-                                ? "Single and vulnerable"
-                                : "Not in villa");
-
-                            return (
-                              <td
-                                key={`${contestant.id}-${round.id}`}
-                                className={`border-b border-r border-zinc-900 px-4 py-4 text-lg leading-tight ${getTrackerCellStyles(
-                                  cellValue
-                                )}`}
-                              >
-                                {cellValue}
-                              </td>
-                            );
-                          })
-                        ) : (
-                          <td className="border-b border-r border-zinc-900 px-4 py-4 text-zinc-500">
-                            No round data yet
-                          </td>
-                        )}
-                        <td
-                          className={`border-b border-zinc-900 px-4 py-4 text-lg font-medium ${getTrackerCellStyles(
-                            finalState
-                          )}`}
-                        >
-                          {finalState}
-                        </td>
-                      </tr>
-                    );
-                  })
-                ) : (
-                  <tr>
-                    <td
-                      colSpan={desktopTrackerRounds.length + 2}
-                      className="px-4 py-10 text-center text-sm text-zinc-400"
-                    >
-                      Add contestants in admin to start filling the villa board.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="mt-5 grid gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 md:grid-cols-2">
+          <div className="mx-auto mt-5 grid max-w-4xl gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 md:grid-cols-2">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-400">
                 Islander key

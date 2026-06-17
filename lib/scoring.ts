@@ -180,13 +180,19 @@ export function calculateQuestionChallengeScores(
 ) {
   const totals = new Map<string, number>();
   const resultsByQuestion = new Map<string, string>();
+  const noScoreQuestionIds = new Set<string>();
 
   roundResults.forEach((result) => {
-    if (
-      result.result_type === "question_pick" &&
-      result.round_question_id &&
-      result.contestant_id
-    ) {
+    if (result.result_type === "question_pick" && result.round_question_id) {
+      if (!result.contestant_id && !result.contestant_2_id) {
+        noScoreQuestionIds.add(result.round_question_id);
+        return;
+      }
+
+      if (!result.contestant_id) {
+        return;
+      }
+
       resultsByQuestion.set(
         result.round_question_id,
         result.contestant_2_id
@@ -200,6 +206,7 @@ export function calculateQuestionChallengeScores(
     if (
       prediction.prediction_role === "question_pick" &&
       prediction.round_question_id &&
+      !noScoreQuestionIds.has(prediction.round_question_id) &&
       !!prediction.contestant_1_id &&
       (
         prediction.contestant_2_id

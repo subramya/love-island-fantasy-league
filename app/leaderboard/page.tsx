@@ -209,30 +209,25 @@ function describeModuleResults(
 
     return roundQuestions
       .map((question, index) => {
-        const answerId =
-          roundResults.find(
-            (result) =>
-              (result.module_id ?? module.round_id) === module.id &&
-              result.result_type === "question_pick" &&
-              result.round_question_id === question.id
-          )?.contestant_id ?? null;
+        const actualResult = roundResults.find(
+          (result) =>
+            (result.module_id ?? module.round_id) === module.id &&
+            result.result_type === "question_pick" &&
+            result.round_question_id === question.id
+        );
+
+        if (actualResult && !actualResult.contestant_id && !actualResult.contestant_2_id) {
+          return `Q${index + 1}: No-score`;
+        }
+
+        const answerId = actualResult?.contestant_id ?? null;
 
         return `Q${index + 1}: ${
           (question.answer_type ?? "islander") === "couple"
             ? getCoupleName(
                 contestantsById,
-                roundResults.find(
-                  (result) =>
-                    (result.module_id ?? module.round_id) === module.id &&
-                    result.result_type === "question_pick" &&
-                    result.round_question_id === question.id
-                )?.contestant_id ?? null,
-                roundResults.find(
-                  (result) =>
-                    (result.module_id ?? module.round_id) === module.id &&
-                    result.result_type === "question_pick" &&
-                    result.round_question_id === question.id
-                )?.contestant_2_id ?? null,
+                actualResult?.contestant_id ?? null,
+                actualResult?.contestant_2_id ?? null,
                 "Not set"
               )
             : getContestantName(contestantsById, answerId)
@@ -519,6 +514,10 @@ function buildModuleScoreBreakdown(
 
       if (!actual) {
         return `Q${index + 1} (${question.question_text}): waiting for actual answer`;
+      }
+
+      if (!actual.contestant_id && !actual.contestant_2_id) {
+        return `Q${index + 1} (${question.question_text}): no-score for this question (+0)`;
       }
 
       if (!prediction) {
