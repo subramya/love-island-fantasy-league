@@ -122,6 +122,22 @@ function shortenRoundTitle(title: string) {
   return `Ep ${match[1]}`;
 }
 
+function getEpisodeNumber(title: string) {
+  const match = title.match(/^Episode\s+(\d+)/i);
+  return match ? Number.parseInt(match[1], 10) : -1;
+}
+
+function sortRoundsChronologically(left: Round, right: Round) {
+  const leftEpisodeNumber = getEpisodeNumber(left.title);
+  const rightEpisodeNumber = getEpisodeNumber(right.title);
+
+  if (leftEpisodeNumber !== rightEpisodeNumber) {
+    return leftEpisodeNumber - rightEpisodeNumber;
+  }
+
+  return left.title.localeCompare(right.title);
+}
+
 export default function Home() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -260,7 +276,7 @@ export default function Home() {
 
       const nextContestants = (contestantsData ?? []) as Contestant[];
       setContestants(nextContestants);
-      const nextRounds = (roundsData ?? []) as Round[];
+      const nextRounds = [...((roundsData ?? []) as Round[])].sort(sortRoundsChronologically);
       setRounds(nextRounds);
 
       const idToName = new Map(nextContestants.map((contestant) => [contestant.id, contestant.name]));
