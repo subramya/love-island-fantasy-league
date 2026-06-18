@@ -251,6 +251,9 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
   const [softwareUpdateTitle, setSoftwareUpdateTitle] = useState("");
   const [softwareUpdateBody, setSoftwareUpdateBody] = useState("");
   const [sendingPushAlert, setSendingPushAlert] = useState(false);
+  const [pushAlertTitle, setPushAlertTitle] = useState("");
+  const [pushAlertMessage, setPushAlertMessage] = useState("");
+  const [pushAlertUrl, setPushAlertUrl] = useState("/chat");
   const [actualCoupleRows, setActualCoupleRows] = useState<CoupleFormRow[]>([
     createEmptyCoupleRow(1),
   ]);
@@ -1781,6 +1784,58 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
     });
   };
 
+  const sendDirectPushAlert = async () => {
+    const trimmedTitle = pushAlertTitle.trim();
+    const trimmedMessage = pushAlertMessage.trim();
+    const trimmedUrl = pushAlertUrl.trim();
+
+    if (!trimmedTitle || !trimmedMessage || !trimmedUrl) {
+      setErrorMessage("Add a push title, message, and destination link before sending.");
+      setSuccessMessage("");
+      return;
+    }
+
+    setSendingPushAlert(true);
+
+    try {
+      const response = await fetch("/api/push/broadcast", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: trimmedTitle,
+          message: trimmedMessage,
+          url: trimmedUrl.startsWith("/") ? trimmedUrl : `/${trimmedUrl}`,
+          postToFeed: true,
+        }),
+      });
+
+      const payload = (await response.json()) as { error?: string; sentCount?: number };
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to send the push alert.");
+      }
+
+      setSuccessMessage(
+        payload.sentCount
+          ? `Push alert sent to ${payload.sentCount} subscribed device${payload.sentCount === 1 ? "" : "s"} and added to Villa Feed.`
+          : "Push alert sent and added to Villa Feed."
+      );
+      setErrorMessage("");
+      setPushAlertTitle("");
+      setPushAlertMessage("");
+      setPushAlertUrl("/chat");
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Unable to send the push alert right now."
+      );
+      setSuccessMessage("");
+    }
+
+    setSendingPushAlert(false);
+  };
+
   const sendPushAlertFromDraft = async () => {
     if (!notificationDraft) {
       setErrorMessage("Create an alert draft first.");
@@ -2053,7 +2108,7 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
         ) : null}
 
         {showAlerts ? (
-        <section className="grid gap-6 lg:grid-cols-3">
+        <section className="grid gap-6 lg:grid-cols-4">
           <div className="rounded-[2rem] border border-pink-500/20 bg-zinc-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
             <h2 className="text-xl font-semibold">Prediction round alerts</h2>
             <p className="mt-2 text-sm text-zinc-400">
@@ -2088,6 +2143,51 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
             >
               Notify leaderboard update
             </button>
+          </div>
+
+          <div className="rounded-[2rem] border border-emerald-400/20 bg-zinc-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
+            <h2 className="text-xl font-semibold">Push notifications</h2>
+            <p className="mt-2 text-sm text-zinc-400">
+              Send a direct push alert to subscribed phones and post the same update into Villa Feed.
+            </p>
+            <div className="mt-4 space-y-3">
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                Title
+                <input
+                  value={pushAlertTitle}
+                  onChange={(event) => setPushAlertTitle(event.target.value)}
+                  placeholder="Episode 14 is live"
+                  className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-emerald-300"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                Message
+                <textarea
+                  value={pushAlertMessage}
+                  onChange={(event) => setPushAlertMessage(event.target.value)}
+                  placeholder="Lock your picks before the villa opens tonight."
+                  rows={4}
+                  className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-emerald-300"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-300">
+                Destination link
+                <input
+                  value={pushAlertUrl}
+                  onChange={(event) => setPushAlertUrl(event.target.value)}
+                  placeholder="/chat"
+                  className="rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-emerald-300"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={sendDirectPushAlert}
+                disabled={sendingPushAlert}
+                className="rounded-full bg-emerald-400 px-5 py-3 text-sm font-semibold text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-emerald-200"
+              >
+                {sendingPushAlert ? "Sending push..." : "Send push notification"}
+              </button>
+            </div>
           </div>
 
           <div className="rounded-[2rem] border border-yellow-300/20 bg-zinc-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
