@@ -250,6 +250,7 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
   const [leaderboardRoundId, setLeaderboardRoundId] = useState("");
   const [softwareUpdateTitle, setSoftwareUpdateTitle] = useState("");
   const [softwareUpdateBody, setSoftwareUpdateBody] = useState("");
+  const [sendingPushAlert, setSendingPushAlert] = useState(false);
   const [actualCoupleRows, setActualCoupleRows] = useState<CoupleFormRow[]>([
     createEmptyCoupleRow(1),
   ]);
@@ -1780,6 +1781,70 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
     });
   };
 
+  const sendPushAlertFromDraft = async () => {
+    if (!notificationDraft) {
+      setErrorMessage("Create an alert draft first.");
+      setSuccessMessage("");
+      return;
+    }
+
+    setSendingPushAlert(true);
+
+    const title =
+      notificationDraft.kind === "round"
+        ? "New round is live"
+        : notificationDraft.kind === "leaderboard"
+          ? "Leaderboard update"
+          : notificationDraft.subject;
+
+    const url =
+      notificationDraft.kind === "round"
+        ? "/predict"
+        : notificationDraft.kind === "leaderboard"
+          ? "/leaderboard"
+          : "/";
+
+    try {
+      const response = await fetch("/api/push/broadcast", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title,
+          message:
+            notificationDraft.kind === "round"
+              ? `${notificationDraft.roundTitle} is live. Open the app to lock your picks.`
+              : notificationDraft.kind === "leaderboard"
+                ? `The leaderboard has been updated for ${notificationDraft.roundTitle}. Open the app to see the latest standings.`
+                : `${notificationDraft.subject}: ${softwareUpdateBody.trim() || notificationDraft.body.split("\n")[0]}`,
+          url,
+          postToFeed: true,
+        }),
+      });
+
+      const payload = (await response.json()) as { error?: string; sentCount?: number };
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to send the push alert.");
+      }
+
+      setSuccessMessage(
+        payload.sentCount
+          ? `Push alert sent to ${payload.sentCount} subscribed device${payload.sentCount === 1 ? "" : "s"} and added to Villa Feed.`
+          : "Push alert sent and added to Villa Feed."
+      );
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Unable to send the push alert right now."
+      );
+      setSuccessMessage("");
+    }
+
+    setSendingPushAlert(false);
+  };
+
   const copyNotificationValue = async (value: string, label: string) => {
     try {
       await navigator.clipboard.writeText(value);
@@ -1955,6 +2020,14 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                 >
                   Open mail app
                 </a>
+                <button
+                  type="button"
+                  onClick={sendPushAlertFromDraft}
+                  disabled={sendingPushAlert}
+                  className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition hover:border-emerald-300 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {sendingPushAlert ? "Sending push..." : "Send push + feed alert"}
+                </button>
               </div>
             </div>
 

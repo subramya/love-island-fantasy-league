@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
+import { PushSettings } from "@/components/PushSettings";
 import {
   clearStoredLeagueUser,
   getStoredLeagueUser,
@@ -354,6 +355,8 @@ export default function ProfilePage() {
             Open admin
           </Link>
         </section>
+
+        <PushSettings user={user} />
       </div>
     </main>
   );

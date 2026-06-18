@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
+import { PwaBoot } from "@/components/PwaBoot";
 import "./globals.css";
 
 const inter = Inter({
@@ -16,6 +17,12 @@ const jetBrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "Love Island Fantasy League",
   description: "Fantasy prediction league for tracking Love Island couples.",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Love Island FL",
+  },
 };
 
 export default function RootLayout({
@@ -29,6 +36,7 @@ export default function RootLayout({
       className={`${inter.variable} ${jetBrainsMono.variable} h-full antialiased`}
     >
       <body className="min-h-full overflow-x-hidden flex flex-col bg-black text-zinc-100">
+        <PwaBoot />
         <div className="flex-1 pb-24 md:pb-28">{children}</div>
         <MobileBottomNav />
         <footer className="border-t border-zinc-900 bg-black px-6 py-6 text-center">
