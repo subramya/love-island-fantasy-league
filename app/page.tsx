@@ -152,10 +152,6 @@ export default function Home() {
   const [expandedHistoryIds, setExpandedHistoryIds] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
-  const visibleBoardContestants = contestants.filter(
-    (contestant) =>
-      contestant.status !== "eliminated" && !dumpedContestantIds.includes(contestant.id)
-  );
   const latestRound = rounds[rounds.length - 1] ?? null;
   const currentRound = latestRound;
   const mobileTrackerRounds = rounds.slice(-6);
@@ -196,46 +192,183 @@ export default function Home() {
       };
     })
     .sort((left, right) => left.name.localeCompare(right.name));
-  const mobileCurrentCouples = (() => {
-    const seenPairs = new Set<string>();
-    const contestantsByName = new Map(
-      mobileBoardContestants.map((contestant) => [contestant.name, contestant])
-    );
+  const mobileDumpedIslanders = mobileBoardContestants.filter((contestant) => contestant.isDumped);
+  const villaHouseNameMatchers = [
+    "mackenzie",
+    "kenzie",
+    "melanie",
+    "aniya",
+    "jen",
+    "trinity",
+    "kayda",
+    "carl",
+    "chandlar",
+    "chay",
+    "corey",
+    "dylan",
+    "gal",
+    "keyon",
+    "kyle",
+    "ronnie",
+    "ryan",
+    "tino",
+    "trae",
+  ];
+  const casaAmorHouseNameMatchers = [
+    "alannah",
+    "amora",
+    "jaiden",
+    "parmida",
+    "tierra",
+    "sydney",
+    "caleb",
+    "sincere",
+    "zach",
+    "bryce",
+    "kc",
+    "corbin",
+  ];
+  const isVillaHouseContestant = (contestant: (typeof mobileBoardContestants)[number]) => {
+    const normalizedName = contestant.name.trim().toLowerCase();
 
-    return mobileBoardContestants.flatMap((contestant) => {
-      if (contestant.isDumped || contestant.currentStatus === "Not in villa" || !contestant.currentPartner) {
-        return [];
-      }
+    return villaHouseNameMatchers.some((matcher) => normalizedName.includes(matcher));
+  };
+  const isCasaHouseContestant = (contestant: (typeof mobileBoardContestants)[number]) => {
+    const normalizedName = contestant.name.trim().toLowerCase();
 
-      const partnerContestant = contestantsByName.get(contestant.currentPartner);
-      const pairKey = [contestant.id, partnerContestant?.id ?? contestant.currentPartner]
-        .sort()
-        .join(":");
-
-      if (seenPairs.has(pairKey)) {
-        return [];
-      }
-
-      seenPairs.add(pairKey);
-
-      return [
-        {
-          id: pairKey,
-          label: partnerContestant
-            ? `${contestant.name} ❤️ ${partnerContestant.name}`
-            : `${contestant.name} ❤️ ${contestant.currentPartner}`,
-          islanders: partnerContestant ? [contestant, partnerContestant] : [contestant],
-        },
-      ];
-    });
-  })();
-  const mobileSingles = mobileBoardContestants.filter(
+    return casaAmorHouseNameMatchers.some((matcher) => normalizedName.includes(matcher));
+  };
+  const villaHouseContestants = mobileBoardContestants.filter(
+    (contestant) => !contestant.isDumped && isVillaHouseContestant(contestant)
+  );
+  const casaAmorHouseContestants = mobileBoardContestants.filter(
     (contestant) =>
       !contestant.isDumped &&
-      contestant.currentStatus !== "Not in villa" &&
-      !contestant.currentPartner
+      (isCasaHouseContestant(contestant) || !isVillaHouseContestant(contestant))
   );
-  const mobileDumpedIslanders = mobileBoardContestants.filter((contestant) => contestant.isDumped);
+
+  const renderBoardContestantCard = (contestant: (typeof mobileBoardContestants)[number]) => {
+    const typeStyles = getContestantTypeStyles(contestant.contestant_type);
+
+    return (
+      <article
+        key={`board-${contestant.id}`}
+        className={`rounded-[1.1rem] border border-zinc-800 p-2 ${typeStyles.rowClassName}`}
+      >
+        <div className="flex items-start gap-2.5">
+          <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
+            {contestant.image_url ? (
+              <Image
+                src={contestant.image_url}
+                alt={contestant.name}
+                fill
+                className="object-cover"
+                unoptimized
+              />
+            ) : null}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-2">
+              <p className="truncate text-[13px] font-semibold leading-5 text-zinc-100">
+                {contestant.name}
+              </p>
+              <span
+                className={`rounded-full border px-1.5 py-1 text-[8px] font-semibold uppercase tracking-[0.12em] ${typeStyles.badgeClassName}`}
+              >
+                {getContestantTypeLabel(contestant.contestant_type)}
+              </span>
+            </div>
+
+            <div className="mt-1.5 space-y-1 text-[11px] text-zinc-300">
+              <p>
+                Current status:{" "}
+                <span className="font-semibold text-zinc-100">
+                  {contestant.currentStatus === "Single"
+                    ? "Single and vulnerable"
+                    : contestant.currentStatus}
+                </span>
+              </p>
+              <p>
+                Current partner:{" "}
+                <span className="font-semibold text-zinc-100">
+                  {contestant.currentPartner ?? "None"}
+                </span>
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => toggleHistory(contestant.id)}
+          className="mt-2.5 flex min-h-9 w-full items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 text-[11px] font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-900"
+        >
+          {expandedHistoryIds.includes(contestant.id) ? "Hide History" : "View History"}
+        </button>
+
+        {expandedHistoryIds.includes(contestant.id) ? (
+          <div className="mt-3 space-y-2">
+            {mobileTrackerRounds.length > 0 ? (
+              mobileTrackerRounds.map((round) => {
+                const cellValue =
+                  villaHistoryBoard[round.id]?.[contestant.id] ??
+                  (contestant.contestant_type === "original_islander"
+                    ? "Single and vulnerable"
+                    : "Not in villa");
+
+                return (
+                  <div
+                    key={`${contestant.id}-${round.id}-history`}
+                    className="rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                        {shortenRoundTitle(round.title)}
+                      </p>
+                      <p className="truncate text-xs text-zinc-500">{round.title}</p>
+                    </div>
+                    <p className="mt-1 text-xs text-zinc-200">{cellValue}</p>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-400">
+                No round data yet.
+              </div>
+            )}
+          </div>
+        ) : null}
+      </article>
+    );
+  };
+
+  const renderHouseSection = (
+    label: string,
+    contestantsInHouse: (typeof mobileBoardContestants)[number][],
+    emptyState: string
+  ) => (
+    <div className="relative pt-5">
+      <div className="pointer-events-none absolute left-1/2 top-0 h-8 w-8 -translate-x-1/2 rotate-45 rounded-[0.35rem] border-l border-t border-zinc-700 bg-zinc-950" />
+      <div className="rounded-[1.8rem] border border-zinc-700 bg-zinc-900/40 p-3 shadow-[0_18px_40px_rgba(0,0,0,0.28)] sm:p-4">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-base font-semibold text-zinc-100">{label}</h3>
+          <span className="rounded-full border border-zinc-700 bg-zinc-950 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-300">
+            {contestantsInHouse.length}
+          </span>
+        </div>
+
+        {contestantsInHouse.length > 0 ? (
+          <div className="mt-3 space-y-2">
+            {contestantsInHouse.map((contestant) => renderBoardContestantCard(contestant))}
+          </div>
+        ) : (
+          <div className="mt-3 rounded-3xl border border-zinc-800 bg-zinc-950/70 p-4 text-sm text-zinc-400">
+            {emptyState}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   useEffect(() => {
     const hydratePage = async () => {
@@ -787,249 +920,22 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mx-auto mt-6 max-w-4xl">
-            {mobileCurrentCouples.length > 0 ||
-            mobileSingles.length > 0 ||
+          <div className="mx-auto mt-6 max-w-5xl">
+            {villaHouseContestants.length > 0 ||
+            casaAmorHouseContestants.length > 0 ||
             mobileDumpedIslanders.length > 0 ? (
               <div className="space-y-5">
-                <div className="space-y-2.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-lg font-semibold text-zinc-100">Current Couples</h3>
-                    <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-300">
-                      {mobileCurrentCouples.length}
-                    </span>
-                  </div>
-
-                  {mobileCurrentCouples.length > 0 ? (
-                    <div className="space-y-3">
-                      {mobileCurrentCouples.map((couple) => (
-                      <article
-                        key={`mobile-couple-${couple.id}`}
-                        className="rounded-[1.7rem] border border-zinc-800 bg-zinc-900/80 p-3.5"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-sm font-semibold text-zinc-100">{couple.label}</p>
-                          <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-100">
-                            Coupled
-                          </span>
-                        </div>
-
-                        <div className="mt-3 space-y-2.5">
-                          {couple.islanders.map((contestant) => {
-                            const typeStyles = getContestantTypeStyles(contestant.contestant_type);
-
-                            return (
-                              <div
-                                key={`${couple.id}-${contestant.id}`}
-                                className={`rounded-[1.35rem] border border-zinc-800 p-3 ${typeStyles.rowClassName}`}
-                              >
-                                <div className="flex items-start gap-3">
-                                  <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
-                                    {contestant.image_url ? (
-                                      <Image
-                                        src={contestant.image_url}
-                                        alt={contestant.name}
-                                        fill
-                                        className="object-cover"
-                                        unoptimized
-                                      />
-                                    ) : null}
-                                  </div>
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-start justify-between gap-2">
-                                      <p className="truncate text-[15px] font-semibold text-zinc-100">
-                                        {contestant.name}
-                                      </p>
-                                      <span
-                                        className={`rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${typeStyles.badgeClassName}`}
-                                      >
-                                        {getContestantTypeLabel(contestant.contestant_type)}
-                                      </span>
-                                    </div>
-                                    <div className="mt-2 space-y-1 text-sm text-zinc-300">
-                                      <p>
-                                        Status:{" "}
-                                        <span className="font-semibold text-zinc-100">Coupled</span>
-                                      </p>
-                                      <p>
-                                        Partner:{" "}
-                                        <span className="font-semibold text-zinc-100">
-                                          {contestant.currentPartner ?? "None"}
-                                        </span>
-                                      </p>
-                                    </div>
-                                  </div>
-                                </div>
-
-                                <button
-                                  type="button"
-                                  onClick={() => toggleHistory(contestant.id)}
-                                  className="mt-3 flex min-h-11 w-full items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950/80 px-4 text-sm font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-900"
-                                >
-                                  {expandedHistoryIds.includes(contestant.id)
-                                    ? "Hide History"
-                                    : "View History"}
-                                </button>
-
-                                {expandedHistoryIds.includes(contestant.id) ? (
-                                  <div className="mt-3 space-y-2">
-                                    {mobileTrackerRounds.length > 0 ? (
-                                      mobileTrackerRounds.map((round) => {
-                                        const cellValue =
-                                          villaHistoryBoard[round.id]?.[contestant.id] ??
-                                          (contestant.contestant_type === "original_islander"
-                                            ? "Single and vulnerable"
-                                            : "Not in villa");
-
-                                        return (
-                                        <div
-                                          key={`${contestant.id}-${round.id}-history`}
-                                          className="rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-2.5"
-                                        >
-                                            <div className="flex items-center justify-between gap-3">
-                                              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
-                                                {shortenRoundTitle(round.title)}
-                                              </p>
-                                              <p className="truncate text-xs text-zinc-500">
-                                                {round.title}
-                                              </p>
-                                            </div>
-                                            <p className="mt-1 text-sm text-zinc-200">{cellValue}</p>
-                                          </div>
-                                        );
-                                      })
-                                    ) : (
-                                      <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-400">
-                                        No round data yet.
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : null}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </article>
-                    ))}
-                    </div>
-                  ) : (
-                    <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
-                      No confirmed couples yet.
-                    </div>
+                <div className="grid gap-5 lg:grid-cols-2">
+                  {renderHouseSection(
+                    "Villa",
+                    villaHouseContestants,
+                    "No islanders are currently assigned to the Villa house."
                   )}
-                </div>
 
-                <div className="space-y-2.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-lg font-semibold text-zinc-100">Singles</h3>
-                    <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-300">
-                      {mobileSingles.length}
-                    </span>
-                  </div>
-
-                  {mobileSingles.length > 0 ? (
-                    <div className="space-y-3">
-                    {mobileSingles.map((contestant) => {
-                      const typeStyles = getContestantTypeStyles(contestant.contestant_type);
-
-                      return (
-                        <article
-                          key={`mobile-single-${contestant.id}`}
-                          className={`rounded-[1.6rem] border border-zinc-800 p-3.5 ${typeStyles.rowClassName}`}
-                        >
-                          <div className="flex items-start gap-3">
-                            <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
-                              {contestant.image_url ? (
-                                <Image
-                                  src={contestant.image_url}
-                                  alt={contestant.name}
-                                  fill
-                                  className="object-cover"
-                                  unoptimized
-                                />
-                              ) : null}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-start justify-between gap-2">
-                                <p className="truncate text-base font-semibold text-zinc-100">
-                                  {contestant.name}
-                                </p>
-                                <span className="shrink-0 rounded-full border border-fuchsia-400/30 bg-fuchsia-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-fuchsia-100">
-                                  Single
-                                </span>
-                              </div>
-
-                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                <span
-                                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${typeStyles.badgeClassName}`}
-                                >
-                                  {getContestantTypeLabel(contestant.contestant_type)}
-                                </span>
-                              </div>
-
-                              <div className="mt-3 space-y-1 text-sm text-zinc-300">
-                                <p>
-                                  Current status:{" "}
-                                  <span className="font-semibold text-zinc-100">Single and vulnerable</span>
-                                </p>
-                                <p>
-                                  Current partner:{" "}
-                                  <span className="font-semibold text-zinc-100">None</span>
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => toggleHistory(contestant.id)}
-                            className="mt-4 flex min-h-11 w-full items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950/80 px-4 text-sm font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-900"
-                          >
-                            {expandedHistoryIds.includes(contestant.id) ? "Hide History" : "View History"}
-                          </button>
-
-                          {expandedHistoryIds.includes(contestant.id) ? (
-                            <div className="mt-3 space-y-2">
-                              {mobileTrackerRounds.length > 0 ? (
-                                mobileTrackerRounds.map((round) => {
-                                  const cellValue =
-                                    villaHistoryBoard[round.id]?.[contestant.id] ??
-                                    (contestant.contestant_type === "original_islander"
-                                      ? "Single and vulnerable"
-                                      : "Not in villa");
-
-                                  return (
-                                    <div
-                                      key={`${contestant.id}-${round.id}-history`}
-                                      className="rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-2.5"
-                                    >
-                                      <div className="flex items-center justify-between gap-3">
-                                        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
-                                          {shortenRoundTitle(round.title)}
-                                        </p>
-                                        <p className="truncate text-xs text-zinc-500">
-                                          {round.title}
-                                        </p>
-                                      </div>
-                                      <p className="mt-1 text-sm text-zinc-200">{cellValue}</p>
-                                    </div>
-                                  );
-                                })
-                              ) : (
-                                <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-400">
-                                  No round data yet.
-                                </div>
-                              )}
-                            </div>
-                          ) : null}
-                        </article>
-                      );
-                    })}
-                    </div>
-                  ) : (
-                    <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
-                      No singles right now.
-                    </div>
+                  {renderHouseSection(
+                    "Casa Amor",
+                    casaAmorHouseContestants,
+                    "No islanders are currently assigned to the Casa Amor house."
                   )}
                 </div>
 
@@ -1043,102 +949,7 @@ export default function Home() {
 
                   {mobileDumpedIslanders.length > 0 ? (
                     <div className="space-y-3">
-                    {mobileDumpedIslanders.map((contestant) => {
-                      const typeStyles = getContestantTypeStyles(contestant.contestant_type);
-
-                      return (
-                        <article
-                          key={`mobile-dumped-${contestant.id}`}
-                          className={`rounded-[1.6rem] border border-zinc-800 p-3.5 ${typeStyles.rowClassName}`}
-                        >
-                          <div className="flex items-start gap-3">
-                            <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
-                              {contestant.image_url ? (
-                                <Image
-                                  src={contestant.image_url}
-                                  alt={contestant.name}
-                                  fill
-                                  className="object-cover"
-                                  unoptimized
-                                />
-                              ) : null}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-start justify-between gap-2">
-                                <p className="truncate text-base font-semibold text-zinc-100">
-                                  {contestant.name}
-                                </p>
-                                <span className="shrink-0 rounded-full border border-red-400/30 bg-red-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-red-100">
-                                  Dumped
-                                </span>
-                              </div>
-
-                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                <span
-                                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${typeStyles.badgeClassName}`}
-                                >
-                                  {getContestantTypeLabel(contestant.contestant_type)}
-                                </span>
-                              </div>
-
-                              <div className="mt-3 space-y-1 text-sm text-zinc-300">
-                                <p>
-                                  Current status:{" "}
-                                  <span className="font-semibold text-zinc-100">Dumped</span>
-                                </p>
-                                <p>
-                                  Current partner:{" "}
-                                  <span className="font-semibold text-zinc-100">None</span>
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => toggleHistory(contestant.id)}
-                            className="mt-4 flex min-h-11 w-full items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950/80 px-4 text-sm font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-900"
-                          >
-                            {expandedHistoryIds.includes(contestant.id) ? "Hide History" : "View History"}
-                          </button>
-
-                          {expandedHistoryIds.includes(contestant.id) ? (
-                            <div className="mt-3 space-y-2">
-                              {mobileTrackerRounds.length > 0 ? (
-                                mobileTrackerRounds.map((round) => {
-                                  const cellValue =
-                                    villaHistoryBoard[round.id]?.[contestant.id] ??
-                                    (contestant.contestant_type === "original_islander"
-                                      ? "Single and vulnerable"
-                                      : "Not in villa");
-
-                                  return (
-                                    <div
-                                      key={`${contestant.id}-${round.id}-history`}
-                                      className="rounded-2xl border border-zinc-800 bg-zinc-950/70 px-3 py-2.5"
-                                    >
-                                      <div className="flex items-center justify-between gap-3">
-                                        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
-                                          {shortenRoundTitle(round.title)}
-                                        </p>
-                                        <p className="truncate text-xs text-zinc-500">
-                                          {round.title}
-                                        </p>
-                                      </div>
-                                      <p className="mt-1 text-sm text-zinc-200">{cellValue}</p>
-                                    </div>
-                                  );
-                                })
-                              ) : (
-                                <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-400">
-                                  No round data yet.
-                                </div>
-                              )}
-                            </div>
-                          ) : null}
-                        </article>
-                      );
-                    })}
+                      {mobileDumpedIslanders.map((contestant) => renderBoardContestantCard(contestant))}
                     </div>
                   ) : (
                     <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400">
