@@ -214,6 +214,7 @@ export default function DashboardPage() {
                                   alt={contestant.name}
                                   fill
                                   className="object-cover"
+                                  unoptimized
                                 />
                               ) : null}
                             </div>

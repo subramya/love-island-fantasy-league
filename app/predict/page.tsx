@@ -331,6 +331,7 @@ function CastBoard({ contestants }: { contestants: Contestant[] }) {
                   fill
                   className="object-cover"
                   sizes="64px"
+                  unoptimized
                 />
               ) : (
                 <div className="flex h-full items-center justify-center text-lg font-semibold text-zinc-500">
@@ -396,6 +397,7 @@ function ContestantPicker({
                     fill
                     className="object-cover"
                     sizes="56px"
+                    unoptimized
                   />
                 ) : (
                   <div className="flex h-full items-center justify-center text-lg font-semibold text-zinc-500">

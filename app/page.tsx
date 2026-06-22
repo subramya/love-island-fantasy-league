@@ -831,6 +831,7 @@ export default function Home() {
                                         alt={contestant.name}
                                         fill
                                         className="object-cover"
+                                        unoptimized
                                       />
                                     ) : null}
                                   </div>
@@ -944,6 +945,7 @@ export default function Home() {
                                   alt={contestant.name}
                                   fill
                                   className="object-cover"
+                                  unoptimized
                                 />
                               ) : null}
                             </div>
@@ -1057,6 +1059,7 @@ export default function Home() {
                                   alt={contestant.name}
                                   fill
                                   className="object-cover"
+                                  unoptimized
                                 />
                               ) : null}
                             </div>

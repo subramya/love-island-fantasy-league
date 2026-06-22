@@ -2721,6 +2721,7 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                           alt={contestant.name}
                           fill
                           className="object-cover"
+                          unoptimized
                         />
                       ) : null}
                     </div>
@@ -2858,6 +2859,7 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                           alt={contestant.name}
                           fill
                           className="object-cover"
+                          unoptimized
                         />
                       ) : null}
                     </div>
