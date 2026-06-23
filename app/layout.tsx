@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { PwaBoot } from "@/components/PwaBoot";
 import "./globals.css";
@@ -39,6 +40,7 @@ export default function RootLayout({
         <PwaBoot />
         <div className="flex-1 pb-24 md:pb-28">{children}</div>
         <MobileBottomNav />
+        <Analytics />
         <footer className="border-t border-zinc-900 bg-black px-6 py-6 text-center">
           <p className="text-sm text-zinc-500">Created by Ramya Subramanian</p>
           <p className="mt-1 text-xs font-medium uppercase tracking-[0.2em] text-zinc-600">
