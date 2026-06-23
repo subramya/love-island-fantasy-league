@@ -63,6 +63,12 @@ type RoundQuestion = {
   question_order: number;
 };
 
+type RoundQuestionAnswerChoiceRow = {
+  round_question_id: string;
+  contestant_id: string;
+  contestant_2_id: string | null;
+};
+
 type RoundTrackerEntry = {
   round_id: string;
   contestant_id: string;
@@ -490,6 +496,9 @@ export default function PredictPage() {
   const [savedPredictionUpdatedAt, setSavedPredictionUpdatedAt] = useState<string | null>(null);
   const [roundBombshellMap, setRoundBombshellMap] = useState<Record<string, string[]>>({});
   const [roundQuestionsMap, setRoundQuestionsMap] = useState<Record<string, RoundQuestion[]>>({});
+  const [questionAnswerChoicesByQuestionId, setQuestionAnswerChoicesByQuestionId] = useState<
+    Record<string, string[]>
+  >({});
   const [questionPickIdsByModuleId, setQuestionPickIdsByModuleId] = useState<
     Record<string, Record<string, string>>
   >({});
@@ -544,6 +553,10 @@ export default function PredictPage() {
         { data: modulesData, error: modulesError },
         { data: roundBombshellsData, error: roundBombshellsError },
         { data: roundQuestionsData, error: roundQuestionsError },
+        {
+          data: roundQuestionAnswerChoicesData,
+          error: roundQuestionAnswerChoicesError,
+        },
         { data: roundResultsData, error: roundResultsError },
         { data: trackerEntriesData, error: trackerEntriesError },
       ] = await Promise.all([
@@ -574,6 +587,9 @@ export default function PredictPage() {
           .order("question_order")
           .order("created_at"),
         supabase
+          .from("round_question_answer_choices")
+          .select("round_question_id, contestant_id, contestant_2_id"),
+        supabase
           .from("round_results")
           .select("contestant_id, result_type"),
         supabase
@@ -588,6 +604,7 @@ export default function PredictPage() {
         modulesError ||
         roundBombshellsError ||
         roundQuestionsError ||
+        roundQuestionAnswerChoicesError ||
         roundResultsError ||
         trackerEntriesError
       ) {
@@ -598,6 +615,7 @@ export default function PredictPage() {
             modulesError?.message ??
             roundBombshellsError?.message ??
             roundQuestionsError?.message ??
+            roundQuestionAnswerChoicesError?.message ??
             roundResultsError?.message ??
             trackerEntriesError?.message ??
             "Unable to load predictions."
@@ -634,6 +652,15 @@ export default function PredictPage() {
         );
         return map;
       }, {});
+      const nextQuestionAnswerChoicesByQuestionId = (
+        (roundQuestionAnswerChoicesData ?? []) as RoundQuestionAnswerChoiceRow[]
+      ).reduce<Record<string, string[]>>((map, row) => {
+        const nextValue = row.contestant_2_id
+          ? [row.contestant_id, row.contestant_2_id].sort().join(":")
+          : row.contestant_id;
+        map[row.round_question_id] = [...(map[row.round_question_id] ?? []), nextValue];
+        return map;
+      }, {});
       const nextTrackerEntriesByRoundId = ((trackerEntriesData ?? []) as RoundTrackerEntry[]).reduce<
         Record<string, RoundTrackerEntry[]>
       >((map, entry) => {
@@ -643,6 +670,7 @@ export default function PredictPage() {
       setRoundModulesMap(nextModulesMap);
       setRoundBombshellMap(nextRoundBombshellMap);
       setRoundQuestionsMap(nextRoundQuestionsMap);
+      setQuestionAnswerChoicesByQuestionId(nextQuestionAnswerChoicesByQuestionId);
       setRoundTrackerEntriesByRoundId(nextTrackerEntriesByRoundId);
       setDumpedContestantIds(
         Array.from(
@@ -850,6 +878,35 @@ export default function PredictPage() {
     getBombshellIdsForRound(module, roundBombshellMap);
   const getSelectedRoundQuestions = (module: RoundModule) =>
     roundQuestionsMap[module.id] ?? [];
+  const getAllowedContestantChoicesForQuestion = (question: RoundQuestion) => {
+    const allowedIds = questionAnswerChoicesByQuestionId[question.id] ?? [];
+
+    return allowedIds.length > 0
+      ? contestants.filter((contestant) => allowedIds.includes(contestant.id))
+      : contestants;
+  };
+  const getAllowedCoupleChoicesForQuestion = (question: RoundQuestion) => {
+    const allowedValues = questionAnswerChoicesByQuestionId[question.id] ?? [];
+
+    return allowedValues.length > 0
+      ? allowedValues.flatMap((coupleValue) => {
+          const { contestant1Id, contestant2Id } = parseCoupleValue(coupleValue);
+
+          if (!contestant1Id || !contestant2Id) {
+            return [];
+          }
+
+          return [
+            {
+              value: coupleValue,
+              label: getCoupleName(contestants, contestant1Id, contestant2Id),
+              contestant1Id,
+              contestant2Id,
+            },
+          ];
+        })
+      : currentCoupleOptions;
+  };
 
   const savePredictions = async () => {
     setSaving(true);
@@ -1392,8 +1449,10 @@ export default function PredictPage() {
                               </div>
                             ) : null}
                             {selectedRoundQuestions.some(
-                              (question) => (question.answer_type ?? "islander") === "couple"
-                            ) && currentCoupleOptions.length === 0 ? (
+                              (question) =>
+                                (question.answer_type ?? "islander") === "couple" &&
+                                getAllowedCoupleChoicesForQuestion(question).length === 0
+                            ) ? (
                               <div className="rounded-2xl border border-red-500/30 bg-red-950/40 p-4 text-sm text-red-200">
                                 Admin still needs to update the current villa tracker before couple-answer questions can be picked.
                               </div>
@@ -1402,7 +1461,7 @@ export default function PredictPage() {
                               (question.answer_type ?? "islander") === "couple" ? (
                                 <CouplePicker
                                   key={question.id}
-                                  couples={currentCoupleOptions}
+                                  couples={getAllowedCoupleChoicesForQuestion(question)}
                                   label={`Question ${index + 1}`}
                                   helperText={question.question_text}
                                   selectedValue={questionPickIdsByQuestion[question.id] ?? ""}
@@ -1419,7 +1478,7 @@ export default function PredictPage() {
                               ) : (
                                 <ContestantPicker
                                   key={question.id}
-                                  contestants={contestants}
+                                  contestants={getAllowedContestantChoicesForQuestion(question)}
                                   label={`Question ${index + 1}`}
                                   helperText={question.question_text}
                                   selectedId={questionPickIdsByQuestion[question.id] ?? ""}

@@ -255,8 +255,8 @@ export default function Home() {
         key={`board-${contestant.id}`}
         className={`rounded-[1.1rem] border border-zinc-800 p-2 ${typeStyles.rowClassName}`}
       >
-        <div className="flex items-start gap-2.5">
-          <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
+        <div className="flex items-start gap-3">
+          <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-full border border-zinc-800 bg-zinc-900">
             {contestant.image_url ? (
               <Image
                 src={contestant.image_url}
@@ -301,9 +301,9 @@ export default function Home() {
         <button
           type="button"
           onClick={() => toggleHistory(contestant.id)}
-          className="mt-2.5 flex min-h-9 w-full items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 text-[11px] font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-900"
+          className="mt-2 flex min-h-7 w-full items-center justify-center rounded-full border border-zinc-800 bg-zinc-950/80 px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-900"
         >
-          {expandedHistoryIds.includes(contestant.id) ? "Hide History" : "View History"}
+          {expandedHistoryIds.includes(contestant.id) ? "Hide history" : "History"}
         </button>
 
         {expandedHistoryIds.includes(contestant.id) ? (
@@ -787,124 +787,6 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="hidden rounded-[2rem] border border-zinc-800 bg-zinc-950 p-8 shadow-[0_24px_80px_rgba(0,0,0,0.55)] md:block">
-          <div className="max-w-3xl">
-            <p className="text-sm font-medium uppercase tracking-[0.3em] text-pink-300">
-              Love Island Basics
-            </p>
-            <h2 className="mt-2 text-3xl font-semibold">What actually happens in the villa</h2>
-            <p className="mt-3 text-sm leading-7 text-zinc-400">
-              Islanders live together, couple up, get split apart, and survive a steady stream of
-              bombshells, recouplings, and eliminations. New arrivals can steal people, couples can
-              break overnight, and anyone left single or unpopular can end up dumped from the villa.
-              That shifting relationship chaos is what this league is built around.
-            </p>
-          </div>
-
-          <div className="mt-6 grid gap-3 text-sm text-zinc-300 sm:grid-cols-3">
-            <div className="rounded-2xl border border-pink-400/20 bg-pink-500/10 p-4">
-              <p className="font-semibold text-pink-200">Couplings change fast</p>
-              <p className="mt-2 text-zinc-300/80">
-                Islanders pair up early, but bombshells and recouplings can flip everything in a
-                single episode.
-              </p>
-            </div>
-            <div className="rounded-2xl border border-sky-400/20 bg-sky-500/10 p-4">
-              <p className="font-semibold text-sky-100">Bombshells cause chaos</p>
-              <p className="mt-2 text-zinc-300/80">
-                New contestants arrive to tempt, steal, and shake up couples that looked safe five
-                minutes earlier.
-              </p>
-            </div>
-            <div className="rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-4">
-              <p className="font-semibold text-yellow-100">Dumpings raise the stakes</p>
-              <p className="mt-2 text-zinc-300/80">
-                Islanders who lose their partner, lose public support, or get caught in the wrong
-                twist can be sent home.
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-8 border-t border-zinc-800 pt-8">
-          <div className="max-w-3xl">
-            <p className="text-sm font-medium uppercase tracking-[0.3em] text-sky-300">
-              How to play
-            </p>
-            <h2 className="mt-2 text-3xl font-semibold">Make your picks before the villa flips</h2>
-            <p className="mt-3 text-sm leading-7 text-zinc-400">
-              Every episode gets its own round, even if it turns out to be a no-score watch-only
-              night. Log in, make the right kind of pick for the current round, then come back
-              after each episode to see how the leaderboard moves.
-            </p>
-          </div>
-          <div className="mt-6 grid gap-3 text-sm text-zinc-300 sm:grid-cols-3">
-            <div className="rounded-2xl border border-pink-400/20 bg-pink-500/10 p-4">
-              <p className="font-semibold text-pink-200">1. Log in</p>
-              <p className="mt-2 text-zinc-300/80">
-                Claim your player name and enter the villa.
-              </p>
-            </div>
-            <div className="rounded-2xl border border-sky-400/20 bg-sky-500/10 p-4">
-              <p className="font-semibold text-sky-100">2. Predict</p>
-              <p className="mt-2 text-zinc-300/80">
-                Submit the right kind of pick for that episode’s round before it locks.
-              </p>
-            </div>
-            <div className="rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-4">
-              <p className="font-semibold text-yellow-100">3. Score</p>
-              <p className="mt-2 text-zinc-300/80">
-                Watch the leaderboard shift after each episode once scores drop.
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-8">
-            <div className="max-w-3xl">
-              <p className="text-sm font-medium uppercase tracking-[0.3em] text-yellow-200">
-                Points by round
-              </p>
-              <h3 className="mt-2 text-2xl font-semibold">How scoring works</h3>
-              <p className="mt-3 text-sm leading-7 text-zinc-400">
-                Different episode types use different scoring, so players only make the picks that
-                match that round.
-              </p>
-            </div>
-
-            <div className="mt-6 grid gap-3 lg:grid-cols-2">
-              <div className="rounded-2xl border border-pink-400/20 bg-pink-500/10 p-5">
-                <p className="font-semibold text-pink-200">Recoupling prediction</p>
-                <p className="mt-2 text-sm text-zinc-300/80">Exact couple match: +5</p>
-                <p className="mt-1 text-sm text-zinc-300/80">One correct person, wrong partner: +2</p>
-                <p className="mt-1 text-sm text-zinc-300/80">Wrong: 0</p>
-              </div>
-
-              <div className="rounded-2xl border border-sky-400/20 bg-sky-500/10 p-5">
-                <p className="font-semibold text-sky-100">Elimination prediction</p>
-                <p className="mt-2 text-sm text-zinc-300/80">Correct dumped islander: +5</p>
-                <p className="mt-1 text-sm text-zinc-300/80">
-                  Correct bottom-group survivor: +2
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-5">
-                <p className="font-semibold text-yellow-100">Bombshell arrival prediction</p>
-                <p className="mt-2 text-sm text-zinc-300/80">
-                  Correctly guess who each bombshell goes after: +5 each
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-5">
-                <p className="font-semibold text-zinc-100">No-score episode</p>
-                <p className="mt-2 text-sm text-zinc-300/80">
-                  Watch-only round. No picks, no points, but the episode still gets its own round in
-                  the league.
-                </p>
-              </div>
-            </div>
-          </div>
-          </div>
-        </section>
-
         <section
           id="villa-board"
           className="rounded-[2rem] border border-yellow-300/20 bg-zinc-950 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.55)] sm:p-8"
@@ -1004,7 +886,7 @@ export default function Home() {
 
         </section>
 
-        <section className="space-y-3 md:hidden">
+        <section className="space-y-3">
           <Accordion title="Love Island Basics" label="Quick Context">
             <div className="space-y-3">
               <div className="rounded-2xl border border-pink-400/20 bg-pink-500/10 p-4">

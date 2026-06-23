@@ -64,6 +64,12 @@ type RoundQuestion = {
   question_order: number;
 };
 
+type RoundQuestionAnswerChoiceRow = {
+  round_question_id: string;
+  contestant_id: string;
+  contestant_2_id: string | null;
+};
+
 type RoundTrackerEntry = {
   round_id: string;
   contestant_id: string;
@@ -104,6 +110,8 @@ type RoundResultRow = {
 type QuestionPrompt = {
   questionText: string;
   answerType: "islander" | "couple";
+  allowedContestantIds: string[];
+  allowedCoupleValues: string[];
 };
 
 const NO_SCORE_OPTION = "__no_score__";
@@ -136,6 +144,8 @@ function createEmptyQuestionPrompt(): QuestionPrompt {
   return {
     questionText: "",
     answerType: "islander",
+    allowedContestantIds: [],
+    allowedCoupleValues: [],
   };
 }
 
@@ -152,6 +162,39 @@ function slugifyContestantName(value: string) {
 function getFileExtension(fileName: string) {
   const lastSegment = fileName.split(".").pop()?.toLowerCase();
   return lastSegment && lastSegment !== fileName.toLowerCase() ? lastSegment : "jpg";
+}
+
+function buildQuestionAnswerChoiceRows(
+  questionId: string,
+  prompt: QuestionPrompt
+): Array<{
+  round_question_id: string;
+  contestant_id: string;
+  contestant_2_id?: string | null;
+}> {
+  if (prompt.answerType === "couple") {
+    return prompt.allowedCoupleValues.flatMap((coupleValue) => {
+      const { contestant1Id, contestant2Id } = parseCoupleValue(coupleValue);
+
+      if (!contestant1Id || !contestant2Id) {
+        return [];
+      }
+
+      return [
+        {
+          round_question_id: questionId,
+          contestant_id: contestant1Id,
+          contestant_2_id: contestant2Id,
+        },
+      ];
+    });
+  }
+
+  return prompt.allowedContestantIds.map((contestantId) => ({
+    round_question_id: questionId,
+    contestant_id: contestantId,
+    contestant_2_id: null,
+  }));
 }
 
 type BombshellSelectorGroupProps = {
@@ -182,6 +225,39 @@ function BombshellSelectorGroup({
             }`}
           >
             {contestant.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function QuestionChoiceSelectorGroup({
+  options,
+  selectedValues,
+  onToggle,
+}: {
+  options: Array<{ value: string; label: string }>;
+  selectedValues: string[];
+  onToggle: (value: string) => void;
+}) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {options.map((option) => {
+        const isSelected = selectedValues.includes(option.value);
+
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onToggle(option.value)}
+            className={`rounded-2xl border px-4 py-3 text-left text-sm font-medium transition ${
+              isSelected
+                ? "border-pink-400 bg-pink-500/12 text-pink-100"
+                : "border-zinc-800 bg-zinc-950 text-zinc-200 hover:border-pink-300/60 hover:bg-zinc-900"
+            }`}
+          >
+            {option.label}
           </button>
         );
       })}
@@ -233,6 +309,9 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
   const [roundQuestionsByRoundId, setRoundQuestionsByRoundId] = useState<
     Record<string, RoundQuestion[]>
   >({});
+  const [questionAnswerChoicesByQuestionId, setQuestionAnswerChoicesByQuestionId] = useState<
+    Record<string, string[]>
+  >({});
   const [roundTrackerEntriesByRoundId, setRoundTrackerEntriesByRoundId] = useState<
     Record<string, RoundTrackerEntry[]>
   >({});
@@ -275,6 +354,35 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
     () => buildCurrentCoupleOptions(contestants, rounds, roundTrackerEntriesByRoundId),
     [contestants, rounds, roundTrackerEntriesByRoundId]
   );
+  const islanderAnswerChoiceOptions = contestants.map((contestant) => ({
+    value: contestant.id,
+    label: contestant.name,
+  }));
+  const coupleAnswerChoiceOptions = currentCoupleOptions.map((couple) => ({
+    value: couple.value,
+    label: couple.label,
+  }));
+  const getStoredCoupleAnswerChoiceOptions = (questionId: string) => {
+    const allowedValues = questionAnswerChoicesByQuestionId[questionId] ?? [];
+
+    return allowedValues.flatMap((coupleValue) => {
+      const { contestant1Id, contestant2Id } = parseCoupleValue(coupleValue);
+
+      if (!contestant1Id || !contestant2Id) {
+        return [];
+      }
+
+      return [
+        {
+          value: coupleValue,
+          label: `${getContestantDisplayName(contestants, contestant1Id)} + ${getContestantDisplayName(
+            contestants,
+            contestant2Id
+          )}`,
+        },
+      ];
+    });
+  };
   const selectedActualRound =
     rounds.find((round) => round.id === selectedActualRoundId) ?? null;
   const selectedActualRoundModules = selectedActualRound
@@ -331,6 +439,7 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
       { data: leagueMembersData, error: leagueMembersError },
       { data: roundBombshellsData, error: roundBombshellsError },
       { data: roundQuestionsData, error: roundQuestionsError },
+      { data: roundQuestionAnswerChoicesData, error: roundQuestionAnswerChoicesError },
       { data: roundTrackerEntriesData, error: roundTrackerEntriesError },
     ] = await Promise.all([
       supabase
@@ -359,6 +468,9 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
         .order("question_order")
         .order("created_at"),
       supabase
+        .from("round_question_answer_choices")
+        .select("round_question_id, contestant_id, contestant_2_id"),
+      supabase
         .from("round_tracker_entries")
         .select("round_id, contestant_id, tracker_state, partner_contestant_id"),
     ]);
@@ -370,6 +482,7 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
       leagueMembersError ||
       roundBombshellsError ||
       roundQuestionsError ||
+      roundQuestionAnswerChoicesError ||
       roundTrackerEntriesError
     ) {
       setErrorMessage(
@@ -379,6 +492,7 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
           leagueMembersError?.message ??
           roundBombshellsError?.message ??
           roundQuestionsError?.message ??
+          roundQuestionAnswerChoicesError?.message ??
           roundTrackerEntriesError?.message ??
           "Unable to load admin data."
       );
@@ -410,6 +524,15 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
       );
       return map;
     }, {});
+    const nextQuestionAnswerChoicesByQuestionId = (
+      (roundQuestionAnswerChoicesData ?? []) as RoundQuestionAnswerChoiceRow[]
+    ).reduce<Record<string, string[]>>((map, row) => {
+      const nextValue = row.contestant_2_id
+        ? [row.contestant_id, row.contestant_2_id].sort().join(":")
+        : row.contestant_id;
+      map[row.round_question_id] = [...(map[row.round_question_id] ?? []), nextValue];
+      return map;
+    }, {});
     const nextRoundTrackerEntriesByRoundId = (
       (roundTrackerEntriesData ?? []) as RoundTrackerEntry[]
     ).reduce<Record<string, RoundTrackerEntry[]>>((map, row) => {
@@ -422,6 +545,7 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
     setRoundModulesMap(nextRoundModulesMap);
     setRoundBombshellSelections(nextRoundBombshellSelections);
     setRoundQuestionsByRoundId(nextRoundQuestionsByRoundId);
+    setQuestionAnswerChoicesByQuestionId(nextQuestionAnswerChoicesByQuestionId);
     setRoundTrackerEntriesByRoundId(nextRoundTrackerEntriesByRoundId);
     setLeagueMembers((leagueMembersData ?? []) as LeagueMember[]);
     setContestantStatuses(
@@ -911,8 +1035,8 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
 
     const trimmedQuestionPrompts = questionPrompts
       .map((prompt) => ({
+        ...prompt,
         questionText: prompt.questionText.trim(),
-        answerType: prompt.answerType,
       }))
       .filter((prompt) => prompt.questionText !== "");
 
@@ -981,7 +1105,9 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
     }
 
     if (isQuestionChallengePrediction(predictionType)) {
-      const { error: insertQuestionsError } = await supabase.from("round_questions").insert(
+      const { data: insertedQuestions, error: insertQuestionsError } = await supabase
+        .from("round_questions")
+        .insert(
         trimmedQuestionPrompts.map((questionText, index) => ({
           round_id: insertedRound.id,
           module_id: insertedModule.id,
@@ -989,11 +1115,32 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
           answer_type: questionText.answerType,
           question_order: index + 1,
         }))
-      );
+        )
+        .select("id, question_order");
 
       if (insertQuestionsError) {
         setErrorMessage(insertQuestionsError.message);
         return;
+      }
+
+      const questionAnswerChoiceRows = ((insertedQuestions ?? []) as Array<{
+        id: string;
+        question_order: number;
+      }>)
+        .sort((left, right) => left.question_order - right.question_order)
+        .flatMap((question, index) =>
+          buildQuestionAnswerChoiceRows(question.id, trimmedQuestionPrompts[index] ?? createEmptyQuestionPrompt())
+        );
+
+      if (questionAnswerChoiceRows.length > 0) {
+        const { error: insertQuestionChoiceError } = await supabase
+          .from("round_question_answer_choices")
+          .insert(questionAnswerChoiceRows);
+
+        if (insertQuestionChoiceError) {
+          setErrorMessage(insertQuestionChoiceError.message);
+          return;
+        }
       }
     }
 
@@ -1025,8 +1172,8 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
 
     const trimmedPrompts = moduleQuestionPrompts
       .map((prompt) => ({
+        ...prompt,
         questionText: prompt.questionText.trim(),
-        answerType: prompt.answerType,
       }))
       .filter((prompt) => prompt.questionText !== "");
 
@@ -1071,7 +1218,9 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
     }
 
     if (isQuestionChallengePrediction(modulePredictionType)) {
-      const { error: insertQuestionsError } = await supabase.from("round_questions").insert(
+      const { data: insertedQuestions, error: insertQuestionsError } = await supabase
+        .from("round_questions")
+        .insert(
         trimmedPrompts.map((questionText, index) => ({
           round_id: moduleRoundId,
           module_id: insertedModule.id,
@@ -1079,12 +1228,34 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
           answer_type: questionText.answerType,
           question_order: index + 1,
         }))
-      );
+        )
+        .select("id, question_order");
 
       if (insertQuestionsError) {
         setErrorMessage(insertQuestionsError.message);
         setSuccessMessage("");
         return;
+      }
+
+      const questionAnswerChoiceRows = ((insertedQuestions ?? []) as Array<{
+        id: string;
+        question_order: number;
+      }>)
+        .sort((left, right) => left.question_order - right.question_order)
+        .flatMap((question, index) =>
+          buildQuestionAnswerChoiceRows(question.id, trimmedPrompts[index] ?? createEmptyQuestionPrompt())
+        );
+
+      if (questionAnswerChoiceRows.length > 0) {
+        const { error: insertQuestionChoiceError } = await supabase
+          .from("round_question_answer_choices")
+          .insert(questionAnswerChoiceRows);
+
+        if (insertQuestionChoiceError) {
+          setErrorMessage(insertQuestionChoiceError.message);
+          setSuccessMessage("");
+          return;
+        }
       }
     }
 
@@ -2433,6 +2604,14 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                                 ? {
                                     ...currentPrompt,
                                     answerType: event.target.value as "islander" | "couple",
+                                    allowedContestantIds:
+                                      event.target.value === "islander"
+                                        ? currentPrompt.allowedContestantIds
+                                        : [],
+                                    allowedCoupleValues:
+                                      event.target.value === "couple"
+                                        ? currentPrompt.allowedCoupleValues
+                                        : [],
                                   }
                                 : currentPrompt
                             )
@@ -2462,10 +2641,58 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                         }
                         className="w-full rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-sky-400"
                       />
+                      <div className="mt-3 space-y-2">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                          Allowed answer choices
+                        </p>
+                        <QuestionChoiceSelectorGroup
+                          options={
+                            prompt.answerType === "couple"
+                              ? coupleAnswerChoiceOptions
+                              : islanderAnswerChoiceOptions
+                          }
+                          selectedValues={
+                            prompt.answerType === "couple"
+                              ? prompt.allowedCoupleValues
+                              : prompt.allowedContestantIds
+                          }
+                          onToggle={(value) =>
+                            setQuestionPrompts((currentValue) =>
+                              currentValue.map((currentPrompt, currentIndex) =>
+                                currentIndex === index
+                                  ? {
+                                      ...currentPrompt,
+                                      allowedCoupleValues:
+                                        currentPrompt.answerType === "couple"
+                                          ? toggleContestantId(
+                                              currentPrompt.allowedCoupleValues,
+                                              value
+                                            )
+                                          : currentPrompt.allowedCoupleValues,
+                                      allowedContestantIds:
+                                        currentPrompt.answerType === "islander"
+                                          ? toggleContestantId(
+                                              currentPrompt.allowedContestantIds,
+                                              value
+                                            )
+                                          : currentPrompt.allowedContestantIds,
+                                    }
+                                  : currentPrompt
+                              )
+                            )
+                          }
+                        />
+                        <p className="text-xs text-zinc-500">
+                          Leave this empty to show every{" "}
+                          {prompt.answerType === "couple" ? "current couple" : "islander"} as an
+                          option.
+                        </p>
+                      </div>
                     </div>
                   ))}
                   <p className="text-xs text-zinc-500">
-                    Players will answer each question by choosing one islander. Every correct answer is worth 4 points.
+                    Players will answer each question using only the choice set you pick here.
+                    Every correct answer is worth 4 points.
                   </p>
                 </div>
               ) : null}
@@ -2649,6 +2876,14 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                                 ? {
                                     ...currentPrompt,
                                     answerType: event.target.value as "islander" | "couple",
+                                    allowedContestantIds:
+                                      event.target.value === "islander"
+                                        ? currentPrompt.allowedContestantIds
+                                        : [],
+                                    allowedCoupleValues:
+                                      event.target.value === "couple"
+                                        ? currentPrompt.allowedCoupleValues
+                                        : [],
                                   }
                                 : currentPrompt
                             )
@@ -2678,6 +2913,53 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                         }
                         className="w-full rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-sky-400"
                       />
+                      <div className="mt-3 space-y-2">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                          Allowed answer choices
+                        </p>
+                        <QuestionChoiceSelectorGroup
+                          options={
+                            prompt.answerType === "couple"
+                              ? coupleAnswerChoiceOptions
+                              : islanderAnswerChoiceOptions
+                          }
+                          selectedValues={
+                            prompt.answerType === "couple"
+                              ? prompt.allowedCoupleValues
+                              : prompt.allowedContestantIds
+                          }
+                          onToggle={(value) =>
+                            setModuleQuestionPrompts((currentValue) =>
+                              currentValue.map((currentPrompt, currentIndex) =>
+                                currentIndex === index
+                                  ? {
+                                      ...currentPrompt,
+                                      allowedCoupleValues:
+                                        currentPrompt.answerType === "couple"
+                                          ? toggleContestantId(
+                                              currentPrompt.allowedCoupleValues,
+                                              value
+                                            )
+                                          : currentPrompt.allowedCoupleValues,
+                                      allowedContestantIds:
+                                        currentPrompt.answerType === "islander"
+                                          ? toggleContestantId(
+                                              currentPrompt.allowedContestantIds,
+                                              value
+                                            )
+                                          : currentPrompt.allowedContestantIds,
+                                    }
+                                  : currentPrompt
+                              )
+                            )
+                          }
+                        />
+                        <p className="text-xs text-zinc-500">
+                          Leave this empty to show every{" "}
+                          {prompt.answerType === "couple" ? "current couple" : "islander"} as an
+                          option.
+                        </p>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -3134,8 +3416,12 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
             {isQuestionChallengePrediction(selectedActualModule?.prediction_type ?? "") ? (
               <div className="mt-4 space-y-4 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
                 {(selectedActualModule && (roundQuestionsByRoundId[selectedActualModule.id] ?? []).some(
-                  (question) => (question.answer_type ?? "islander") === "couple"
-                ) && currentCoupleOptions.length === 0) ? (
+                  (question) =>
+                    (question.answer_type ?? "islander") === "couple" &&
+                    (questionAnswerChoicesByQuestionId[question.id]?.length
+                      ? getStoredCoupleAnswerChoiceOptions(question.id).length === 0
+                      : currentCoupleOptions.length === 0)
+                )) ? (
                   <p className="text-sm text-yellow-200">
                     Update the villa tracker first so current-couple answer options are available here.
                   </p>
@@ -3160,7 +3446,10 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                         >
                           <option value="">Select the correct current couple</option>
                           <option value={NO_SCORE_OPTION}>No-score for this question</option>
-                          {currentCoupleOptions.map((couple) => (
+                          {(questionAnswerChoicesByQuestionId[question.id]?.length
+                            ? getStoredCoupleAnswerChoiceOptions(question.id)
+                            : currentCoupleOptions
+                          ).map((couple) => (
                             <option key={couple.value} value={couple.value}>
                               {couple.label}
                             </option>
@@ -3179,7 +3468,14 @@ export default function AdminClient({ mode }: { mode: AdminViewMode }) {
                         >
                           <option value="">Select the correct islander</option>
                           <option value={NO_SCORE_OPTION}>No-score for this question</option>
-                          {contestants.map((contestant) => (
+                          {(questionAnswerChoicesByQuestionId[question.id]?.length
+                            ? contestants.filter((contestant) =>
+                                (questionAnswerChoicesByQuestionId[question.id] ?? []).includes(
+                                  contestant.id
+                                )
+                              )
+                            : contestants
+                          ).map((contestant) => (
                             <option key={contestant.id} value={contestant.id}>
                               {contestant.name}
                             </option>
